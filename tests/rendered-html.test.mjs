@@ -39,8 +39,13 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
 
   assert.match(page, /chapter_applications/);
   assert.match(page, /chapter-login/);
+  assert.match(page, /signInAnonymously/);
+  assert.match(page, /verify_admin_code/);
+  assert.match(page, /is_admin/);
   assert.match(edgeFunction, /weekly_reports/);
-  assert.match(edgeFunction, /access_code_hash/);
+  assert.match(edgeFunction, /provision_chapter_code/);
+  assert.match(edgeFunction, /current_chapter_id/);
+  assert.doesNotMatch(page, /signInWithPassword|tmm-chapter-session/);
   assert.match(layout, /TMM Chapters/);
   assert.match(css, /data-theme="dark"/);
   assert.match(css, /Manrope/);

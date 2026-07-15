@@ -75,6 +75,10 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--mute
 .card-heading h1 { font-size: 2rem; }
 .card-heading p { margin-bottom: 0; }
 .stack-form { display: flex; flex-direction: column; gap: 16px; }
+.access-state { margin: -4px 0 0; font-size: 11px; }
+.access-state.loading { color: var(--muted); }
+.access-state.error { color: var(--danger); }
+.turnstile-shell { min-height: 65px; }
 .field { display: flex; flex-direction: column; gap: 7px; color: var(--text); font-size: 12px; font-weight: 600; }
 .field small { color: var(--muted); font-size: 10px; font-weight: 500; }
 .code-input { min-height: 54px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 15px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; }

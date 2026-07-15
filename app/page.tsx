@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { supabase } from "../lib/supabase";
 
 type View = "access" | "apply" | "chapter" | "admin";
 type Theme = "light" | "dark";
 type AdminTab = "applications" | "chapters" | "work";
+type AuthState = "loading" | "ready" | "error";
 
 type Chapter = {
   id: string;
@@ -73,6 +74,45 @@ type AdminData = { applications: Application[]; chapters: Chapter[]; reports: Re
 type AdminActionResult = Partial<AdminData> & { code?: string; chapter?: Chapter; overview?: AdminData };
 
 const emptyAdmin: AdminData = { applications: [], chapters: [], reports: [], tasks: [], events: [] };
+const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? "";
+
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (element: HTMLElement, options: { sitekey: string; callback: (token: string) => void; "expired-callback": () => void; "error-callback": () => void }) => string;
+      remove: (widgetId: string) => void;
+    };
+  }
+}
+
+function accessError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (message.includes("RATE_LIMITED") || message.toLowerCase().includes("too many attempts")) {
+    return "Too many attempts. Please wait 15 minutes and try again.";
+  }
+  if (message.toLowerCase().includes("expired")) {
+    return "Your access session has expired. Enter your access code again.";
+  }
+  if (message.toLowerCase().includes("not valid") || message.toLowerCase().includes("invalid")) {
+    return "That access code is not valid.";
+  }
+  if (message.includes("AUTH_REQUIRED") || message.toLowerCase().includes("access denied")) {
+    return "Access denied. Enter your access code again.";
+  }
+  return "Access denied. Please try again.";
+}
+
+async function ensureAnonymousSession(captchaToken?: string) {
+  if (!supabase) throw new Error("The portal is not connected yet.");
+  const { data: current, error: currentError } = await supabase.auth.getSession();
+  if (currentError) throw currentError;
+  if (current.session) return current.session;
+  if (turnstileSiteKey && !captchaToken) throw new Error("CAPTCHA_REQUIRED");
+  const { data, error } = await supabase.auth.signInAnonymously(captchaToken ? { options: { captchaToken } } : undefined);
+  if (error) throw error;
+  if (!data.session) throw new Error("AUTH_REQUIRED");
+  return data.session;
+}
 
 function thisMonday() {
   const date = new Date();
@@ -116,12 +156,50 @@ function Status({ value }: { value: string }) {
   return <span className={`status status-${value.replaceAll("_", "-")}`}>{value.replaceAll("_", " ")}</span>;
 }
 
+function TurnstileChallenge({ onToken }: { onToken: (token: string) => void }) {
+  const host = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!turnstileSiteKey || !host.current) return;
+    let widgetId = "";
+    let cancelled = false;
+    const render = () => {
+      if (cancelled || !host.current || !window.turnstile || widgetId) return;
+      widgetId = window.turnstile.render(host.current, {
+        sitekey: turnstileSiteKey,
+        callback: onToken,
+        "expired-callback": () => onToken(""),
+        "error-callback": () => onToken(""),
+      });
+    };
+    const existing = document.querySelector<HTMLScriptElement>('script[data-tmm-turnstile="true"]');
+    if (existing) {
+      if (window.turnstile) render();
+      else existing.addEventListener("load", render, { once: true });
+    } else {
+      const script = document.createElement("script");
+      script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+      script.async = true;
+      script.defer = true;
+      script.dataset.tmmTurnstile = "true";
+      script.addEventListener("load", render, { once: true });
+      document.head.appendChild(script);
+    }
+    return () => {
+      cancelled = true;
+      if (widgetId && window.turnstile) window.turnstile.remove(widgetId);
+    };
+  }, [onToken]);
+  return turnstileSiteKey ? <div className="turnstile-shell" ref={host} aria-label="Security check" /> : null;
+}
+
 export default function Page() {
   const [view, setView] = useState<View>("access");
   const [theme, setTheme] = useState<Theme>("light");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [chapterToken, setChapterToken] = useState("");
+  const [authState, setAuthState] = useState<AuthState>("loading");
+  const [authMessage, setAuthMessage] = useState(turnstileSiteKey ? "Complete the security check to create a secure access session." : "Creating a secure access session…");
+  const [captchaToken, setCaptchaToken] = useState("");
   const [dashboard, setDashboard] = useState<ChapterDashboardData | null>(null);
   const [adminData, setAdminData] = useState<AdminData>(emptyAdmin);
   const [adminReady, setAdminReady] = useState(false);
@@ -147,12 +225,45 @@ export default function Page() {
       setView(initialView);
     }, 0);
 
-    const token = localStorage.getItem("tmm-chapter-session") ?? "";
-    if (!token || initialView !== "access") return;
-    void invokePortal<{ dashboard: ChapterDashboardData }>("chapter-dashboard", { token })
-      .then((result) => { setChapterToken(token); setDashboard(result.dashboard); setView("chapter"); })
-      .catch(() => { localStorage.removeItem("tmm-chapter-session"); setChapterToken(""); });
   }, []);
+
+  useEffect(() => {
+    if (turnstileSiteKey && !captchaToken) {
+      return;
+    }
+    const route = new URLSearchParams(window.location.search).get("view");
+    const initialView: View = route === "apply" || route === "admin" ? route : "access";
+    let active = true;
+    void ensureAnonymousSession(captchaToken || undefined)
+      .then(async () => {
+        if (!active) return;
+        setAuthState("ready");
+        setAuthMessage("");
+        if (initialView === "admin" && supabase) {
+          const { data: allowed } = await supabase.rpc("is_admin");
+          if (allowed === true) {
+            const admin = await invokePortal<AdminData>("admin-overview");
+            setAdminData(admin);
+            setAdminReady(true);
+          }
+          return;
+        }
+        if (initialView !== "access") return;
+        try {
+          const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-dashboard");
+          setDashboard(result.dashboard);
+          setView("chapter");
+        } catch {
+          setDashboard(null);
+        }
+      })
+      .catch(() => {
+        if (!active) return;
+        setAuthState("error");
+        setAuthMessage("Secure access is temporarily unavailable. Please try again.");
+      });
+    return () => { active = false; };
+  }, [captchaToken]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -168,21 +279,18 @@ export default function Page() {
     event.preventDefault();
     setBusy(true);
     try {
+      await ensureAnonymousSession(captchaToken || undefined);
       const form = new FormData(event.currentTarget);
-      const result = await invokePortal<{ token: string; dashboard: ChapterDashboardData }>("chapter-login", { code: form.get("code") });
-      localStorage.setItem("tmm-chapter-session", result.token);
-      setChapterToken(result.token);
+      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-login", { code: String(form.get("code") ?? "").trim() });
       setDashboard(result.dashboard);
       goTo("chapter");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "That code could not be used.");
+      setMessage(accessError(error));
     } finally { setBusy(false); }
   };
 
   const chapterLogout = async () => {
-    if (chapterToken) void invokePortal("chapter-logout", { token: chapterToken }).catch(() => undefined);
-    localStorage.removeItem("tmm-chapter-session");
-    setChapterToken("");
+    void invokePortal("chapter-logout").catch(() => undefined);
     setDashboard(null);
     goTo("access");
   };
@@ -223,23 +331,26 @@ export default function Page() {
         highlights: String(form.get("highlights") ?? ""),
         blockers: String(form.get("blockers") ?? ""),
       };
-      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-submit-report", { token: chapterToken, report });
+      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-submit-report", { report });
       setDashboard(result.dashboard);
       setMessage("Weekly update saved.");
-    } catch (error) { setMessage(error instanceof Error ? error.message : "The report could not be saved."); }
+    } catch (error) { setMessage(accessError(error)); }
     finally { setBusy(false); }
   };
 
   const toggleTask = async (task: Task) => {
     setBusy(true);
     try {
-      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-toggle-task", { token: chapterToken, task_id: task.id, complete: task.status !== "complete" });
+      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-toggle-task", { task_id: task.id, complete: task.status !== "complete" });
       setDashboard(result.dashboard);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "The task could not be updated."); }
+    } catch (error) { setMessage(accessError(error)); }
     finally { setBusy(false); }
   };
 
   const loadAdmin = async () => {
+    if (!supabase) throw new Error("AUTH_REQUIRED");
+    const { data: allowed, error } = await supabase.rpc("is_admin");
+    if (error || allowed !== true) throw new Error("Your access session has expired.");
     const data = await invokePortal<AdminData>("admin-overview");
     setAdminData(data);
     setAdminReady(true);
@@ -250,10 +361,16 @@ export default function Page() {
     if (!supabase) return setMessage("Admin sign-in is not connected yet.");
     setBusy(true);
     const form = new FormData(event.currentTarget);
-    const { error } = await supabase.auth.signInWithPassword({ email: String(form.get("email") ?? ""), password: String(form.get("password") ?? "") });
-    if (error) { setBusy(false); return setMessage(error.message); }
-    try { await loadAdmin(); }
-    catch (error) { await supabase.auth.signOut(); setMessage(error instanceof Error ? error.message : "Admin access is not enabled for this account."); }
+    try {
+      await ensureAnonymousSession(captchaToken || undefined);
+      const { data: verified, error } = await supabase.rpc("verify_admin_code", { input_code: String(form.get("code") ?? "").trim() });
+      if (error) throw error;
+      if (verified !== true) throw new Error("That access code is not valid.");
+      const { data: allowed, error: authorizationError } = await supabase.rpc("is_admin");
+      if (authorizationError || allowed !== true) throw new Error("Access denied.");
+      await loadAdmin();
+    }
+    catch (error) { setAdminReady(false); setMessage(accessError(error)); }
     finally { setBusy(false); }
   };
 
@@ -271,7 +388,7 @@ export default function Page() {
   };
 
   const adminLogout = async () => {
-    if (supabase) await supabase.auth.signOut();
+    if (supabase) await supabase.rpc("clear_admin_session");
     setAdminReady(false);
     setAdminData(emptyAdmin);
     goTo("access");
@@ -288,20 +405,22 @@ export default function Page() {
 
     {notice && <div className="toast" role="status">{notice}<button onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}
 
-    {view === "access" && <AccessView onLogin={chapterLogin} busy={busy} goTo={goTo} />}
+    {view === "access" && <AccessView onLogin={chapterLogin} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} goTo={goTo} />}
     {view === "apply" && <ApplicationView onSubmit={submitApplication} busy={busy} />}
     {view === "chapter" && dashboard && <ChapterView data={dashboard} onReport={submitReport} onToggleTask={toggleTask} onLogout={chapterLogout} busy={busy} />}
-    {view === "admin" && <AdminView data={adminData} ready={adminReady} tab={adminTab} setTab={setAdminTab} onLogin={adminLogin} onAction={adminAction} onLogout={adminLogout} issuedCode={issuedCode} setIssuedCode={setIssuedCode} busy={busy} />}
+    {view === "admin" && <AdminView data={adminData} ready={adminReady} tab={adminTab} setTab={setAdminTab} onLogin={adminLogin} onAction={adminAction} onLogout={adminLogout} issuedCode={issuedCode} setIssuedCode={setIssuedCode} onCaptcha={setCaptchaToken} busy={busy} />}
   </main>;
 }
 
-function AccessView({ onLogin, busy, goTo }: { onLogin: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; goTo: (view: View) => void }) {
+function AccessView({ onLogin, busy, authState, authMessage, onCaptcha, goTo }: { onLogin: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; authState: AuthState; authMessage: string; onCaptcha: (token: string) => void; goTo: (view: View) => void }) {
   return <section className="access-shell">
     <div className="access-card">
       <div className="card-heading"><span className="tiny-label">Chapter access</span><h1>Enter your chapter code</h1><p>Use the code provided when your chapter was approved.</p></div>
       <form onSubmit={onLogin} className="stack-form">
-        <Field label="Chapter code"><input className="code-input" name="code" autoComplete="one-time-code" autoCapitalize="characters" placeholder="TMM-••••-••••-••••" required /></Field>
-        <Button type="submit" disabled={busy}>{busy ? "Checking…" : "Open chapter dashboard"}</Button>
+        <Field label="6-digit chapter code"><input className="code-input" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" minLength={6} maxLength={6} placeholder="••••••" required /></Field>
+        {turnstileSiteKey && authState !== "ready" && <TurnstileChallenge onToken={onCaptcha} />}
+        {authMessage && <p className={`access-state ${authState}`}>{authMessage}</p>}
+        <Button type="submit" disabled={busy || authState !== "ready"}>{busy ? "Checking…" : authState === "loading" ? "Preparing secure access…" : "Open chapter dashboard"}</Button>
       </form>
       <div className="access-help"><span>Don’t have a code?</span><button onClick={() => goTo("apply")}>Apply to start a chapter</button></div>
     </div>
@@ -360,10 +479,10 @@ function ChapterView({ data, onReport, onToggleTask, onLogout, busy }: { data: C
   </section>;
 }
 
-function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issuedCode, setIssuedCode, busy }: { data: AdminData; ready: boolean; tab: AdminTab; setTab: (tab: AdminTab) => void; onLogin: (event: FormEvent<HTMLFormElement>) => void; onAction: (action: string, payload: Record<string, unknown>, codeName?: string) => Promise<void>; onLogout: () => void; issuedCode: { name: string; code: string } | null; setIssuedCode: (value: { name: string; code: string } | null) => void; busy: boolean }) {
+function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issuedCode, setIssuedCode, onCaptcha, busy }: { data: AdminData; ready: boolean; tab: AdminTab; setTab: (tab: AdminTab) => void; onLogin: (event: FormEvent<HTMLFormElement>) => void; onAction: (action: string, payload: Record<string, unknown>, codeName?: string) => Promise<void>; onLogout: () => void; issuedCode: { name: string; code: string } | null; setIssuedCode: (value: { name: string; code: string } | null) => void; onCaptcha: (token: string) => void; busy: boolean }) {
   const pending = data.applications.filter((application) => application.status === "new" || application.status === "reviewing").length;
   const latestReport = useMemo(() => new Map(data.reports.map((report) => [report.chapter_id, report])), [data.reports]);
-  if (!ready) return <section className="access-shell"><div className="access-card"><div className="card-heading"><span className="tiny-label">Admin</span><h1>Sign in</h1><p>Use the admin account configured in Supabase.</p></div><form className="stack-form" onSubmit={onLogin}><Field label="Email"><input name="email" type="email" required /></Field><Field label="Password"><input name="password" type="password" required /></Field><Button type="submit" disabled={busy}>{busy ? "Signing in…" : "Open admin dashboard"}</Button></form></div></section>;
+  if (!ready) return <section className="access-shell"><div className="access-card"><div className="card-heading"><span className="tiny-label">Admin access</span><h1>Enter admin code</h1><p>Use the secure 6-digit administrator access code.</p></div><form className="stack-form" onSubmit={onLogin}><Field label="6-digit admin code"><input className="code-input" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" minLength={6} maxLength={6} placeholder="••••••" required /></Field>{turnstileSiteKey && <TurnstileChallenge onToken={onCaptcha} />}<Button type="submit" disabled={busy}>{busy ? "Checking…" : "Open admin dashboard"}</Button></form></div></section>;
 
   const submitChapter = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -390,7 +509,7 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
 
       {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Approve to create the chapter and issue its access code.</p></div></div><div className="application-list">{data.applications.length ? data.applications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>{application.contact_name}</span><a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.why && <p>{application.why}</p>}<div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & create code</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}</div></article>) : <Empty text="No applications yet." />}</div></section>}
 
-      {tab === "chapters" && <><section className="admin-section"><div className="section-title"><div><h2>Add a chapter manually</h2><p>Leave the code blank to generate one automatically.</p></div></div><form className="surface-form compact" onSubmit={submitChapter}><div className="form-grid three"><Field label="Chapter name"><input name="name" required /></Field><Field label="City and state"><input name="location" required /></Field><Field label="Lead name"><input name="contact_name" required /></Field><Field label="Lead email"><input name="contact_email" type="email" required /></Field><Field label="Lead phone"><input name="contact_phone" type="tel" /></Field><Field label="Custom code" hint="Optional · at least 10 letters or numbers"><input name="code" className="code-input small" /></Field><Field label="Advisor name"><input name="advisor_name" /></Field><Field label="Advisor email"><input name="advisor_email" type="email" /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>Add chapter</Button></div></form></section><section className="admin-section"><div className="section-title"><div><h2>Chapter directory</h2><p>Contacts, reporting status, and code management.</p></div></div>{data.chapters.length ? <div className="chapter-list">{data.chapters.map((chapter) => { const report = latestReport.get(chapter.id); return <article className="chapter-row" key={chapter.id}><div><strong>{chapter.name}</strong><span>{chapter.location}</span></div><div><span>{chapter.contact_name}</span><a href={`mailto:${chapter.contact_email}`}>{chapter.contact_email}</a>{chapter.contact_phone && <span>{chapter.contact_phone}</span>}</div><div><span>Latest report</span><strong className="plain-strong">{report ? new Date(`${report.week_start}T12:00:00`).toLocaleDateString() : "Not submitted"}</strong></div><div className="chapter-row-end"><Status value={chapter.status} /><span className="code-hint">Code ends •{chapter.access_code_hint ?? "—"}</span><Button kind="secondary" disabled={busy} onClick={() => onAction("admin-reset-code", { chapter_id: chapter.id }, chapter.name)}>Reset code</Button></div></article>; })}</div> : <Empty text="No chapters have been added." />}</section></>}
+      {tab === "chapters" && <><section className="admin-section"><div className="section-title"><div><h2>Add a chapter manually</h2><p>Leave the code blank to generate one automatically.</p></div></div><form className="surface-form compact" onSubmit={submitChapter}><div className="form-grid three"><Field label="Chapter name"><input name="name" required /></Field><Field label="City and state"><input name="location" required /></Field><Field label="Lead name"><input name="contact_name" required /></Field><Field label="Lead email"><input name="contact_email" type="email" required /></Field><Field label="Lead phone"><input name="contact_phone" type="tel" /></Field><Field label="Custom 6-digit code" hint="Optional · exactly 6 digits"><input name="code" className="code-input small" inputMode="numeric" pattern="[0-9]{6}" minLength={6} maxLength={6} /></Field><Field label="Advisor name"><input name="advisor_name" /></Field><Field label="Advisor email"><input name="advisor_email" type="email" /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>Add chapter</Button></div></form></section><section className="admin-section"><div className="section-title"><div><h2>Chapter directory</h2><p>Contacts, reporting status, and code management.</p></div></div>{data.chapters.length ? <div className="chapter-list">{data.chapters.map((chapter) => { const report = latestReport.get(chapter.id); return <article className="chapter-row" key={chapter.id}><div><strong>{chapter.name}</strong><span>{chapter.location}</span></div><div><span>{chapter.contact_name}</span><a href={`mailto:${chapter.contact_email}`}>{chapter.contact_email}</a>{chapter.contact_phone && <span>{chapter.contact_phone}</span>}</div><div><span>Latest report</span><strong className="plain-strong">{report ? new Date(`${report.week_start}T12:00:00`).toLocaleDateString() : "Not submitted"}</strong></div><div className="chapter-row-end"><Status value={chapter.status} /><span className="code-hint">Code ends •{chapter.access_code_hint ?? "—"}</span><Button kind="secondary" disabled={busy} onClick={() => onAction("admin-reset-code", { chapter_id: chapter.id }, chapter.name)}>Reset code</Button></div></article>; })}</div> : <Empty text="No chapters have been added." />}</section></>}
 
       {tab === "work" && <div className="admin-two-column"><section className="admin-section"><div className="section-title"><div><h2>Assign a task</h2><p>Tasks appear immediately in the selected chapter dashboard.</p></div></div><form className="surface-form compact" onSubmit={submitTask}><Field label="Task"><input name="title" required /></Field><Field label="Chapter"><select name="chapter_id" required defaultValue=""><option value="" disabled>Select a chapter</option>{data.chapters.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.name}</option>)}</select></Field><div className="form-grid"><Field label="Due date"><input name="due_date" type="date" /></Field><Field label="Priority"><select name="priority" defaultValue="normal"><option value="normal">Normal</option><option value="high">High</option></select></Field></div><Field label="Details"><textarea name="description" rows={3} /></Field><Button type="submit" disabled={busy}>Assign task</Button></form><div className="admin-item-list">{data.tasks.slice(0, 12).map((task) => <div key={task.id}><span><strong>{task.title}</strong><small>{data.chapters.find((chapter) => chapter.id === task.assigned_chapter_id)?.name ?? "Chapter"}</small></span><Status value={task.status} /></div>)}</div></section><section className="admin-section"><div className="section-title"><div><h2>Create an event</h2><p>Leave chapter blank to share with every chapter.</p></div></div><form className="surface-form compact" onSubmit={submitEvent}><Field label="Event"><input name="title" required /></Field><Field label="Chapter"><select name="chapter_id" defaultValue=""><option value="">All chapters</option>{data.chapters.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.name}</option>)}</select></Field><div className="form-grid"><Field label="Starts"><input name="starts_at" type="datetime-local" required /></Field><Field label="Ends"><input name="ends_at" type="datetime-local" /></Field></div><Field label="Location"><input name="location" /></Field><Field label="Link"><input name="link" type="url" /></Field><Field label="Details"><textarea name="description" rows={3} /></Field><Button type="submit" disabled={busy}>Create event</Button></form><div className="admin-item-list">{data.events.slice(0, 12).map((event) => <div key={event.id}><span><strong>{event.title}</strong><small>{new Date(event.starts_at).toLocaleString()}</small></span>{event.chapter_id ? <Status value="chapter" /> : <Status value="all chapters" />}</div>)}</div></section></div>}
     </div>
