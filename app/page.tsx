@@ -331,8 +331,9 @@ export default function Page() {
   const submitApplication = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!supabase) return setMessage("The application form is not connected yet.");
+    const formElement = event.currentTarget;
     setBusy(true);
-    const form = new FormData(event.currentTarget);
+    const form = new FormData(formElement);
     const payload = {
       contact_name: String(form.get("contact_name") ?? ""),
       contact_email: String(form.get("contact_email") ?? ""),
@@ -342,12 +343,17 @@ export default function Page() {
       student_reach: String(form.get("student_reach") ?? ""),
       why: String(form.get("why") ?? ""),
     };
-    const { error } = await supabase.from("chapter_applications").insert(payload);
-    setBusy(false);
-    if (error) return setMessage(error.message);
-    event.currentTarget.reset();
-    setMessage("Application sent. We’ll review it and contact you by email.");
-    goTo("access");
+    try {
+      const { error } = await supabase.from("chapter_applications").insert(payload);
+      if (error) throw error;
+      formElement.reset();
+      goTo("access");
+      setMessage("Application sent. We’ll review it and contact you by email.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "We couldn’t send your application. Please try again.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const submitReport = async (event: FormEvent<HTMLFormElement>) => {
