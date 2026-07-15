@@ -185,7 +185,13 @@ Deno.serve(async (req: Request) => {
       if (!payload.name || !payload.location || !payload.contact_name || !payload.contact_email) return json({ error: "Name, location, lead name, and lead email are required." }, 400);
       const { data, error } = await admin.from("chapters").insert(payload).select("id, name").single();
       if (error) throw error;
-      const code = await provisionUniqueChapterCode(data.id, chapter.code);
+      let code: string;
+      try {
+        code = await provisionUniqueChapterCode(data.id, chapter.code);
+      } catch (provisionError) {
+        await admin.from("chapters").delete().eq("id", data.id);
+        throw provisionError;
+      }
       return json({ chapter: data, code, overview: await adminOverview() });
     }
 
@@ -204,8 +210,18 @@ Deno.serve(async (req: Request) => {
         status: "active",
       }).select("id, name").single();
       if (chapterError) throw chapterError;
-      const code = await provisionUniqueChapterCode(chapter.id);
-      await admin.from("chapter_applications").update({ status: "approved", updated_at: new Date().toISOString() }).eq("id", applicationId);
+      let code: string;
+      try {
+        code = await provisionUniqueChapterCode(chapter.id);
+      } catch (provisionError) {
+        await admin.from("chapters").delete().eq("id", chapter.id);
+        throw provisionError;
+      }
+      const { error: approvalError } = await admin.from("chapter_applications").update({ status: "approved", updated_at: new Date().toISOString() }).eq("id", applicationId);
+      if (approvalError) {
+        await admin.from("chapters").delete().eq("id", chapter.id);
+        throw approvalError;
+      }
       return json({ chapter, code, overview: await adminOverview() });
     }
 

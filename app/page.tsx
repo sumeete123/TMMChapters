@@ -127,12 +127,14 @@ async function invokePortal<T>(action: string, payload: Record<string, unknown> 
   if (error) {
     const response = (error as { context?: Response }).context;
     if (response) {
+      let details: { error?: string } | null = null;
       try {
-        const details = await response.clone().json() as { error?: string };
-        if (details.error) throw new Error(details.error);
-      } catch (contextError) {
-        if (contextError instanceof Error && contextError.message !== "Unexpected end of JSON input") throw contextError;
-      }
+        details = await response.clone().json() as { error?: string };
+      } catch { /* The status-specific fallback below still gives a plain-language error. */ }
+      if (details?.error) throw new Error(details.error);
+      if (response.status === 429) throw new Error("Too many attempts. Please wait 15 minutes and try again.");
+      if (action === "chapter-login" && response.status === 401) throw new Error("That access code is not valid.");
+      if (response.status === 401 || response.status === 403) throw new Error("Your access session has expired. Enter your access code again.");
     }
     throw new Error(error.message);
   }
