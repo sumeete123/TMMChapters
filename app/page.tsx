@@ -1,332 +1,400 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { supabase } from "../lib/supabase";
 
-type View = "home" | "apply" | "signin" | "portal" | "admin";
+type View = "access" | "apply" | "chapter" | "admin";
+type Theme = "light" | "dark";
+type AdminTab = "applications" | "chapters" | "work";
 
 type Chapter = {
   id: string;
   name: string;
   location: string;
-  contact: string;
-  email: string;
-  status: "On track" | "Needs follow-up" | "New";
-  completion: number;
-  mentors: number;
-  students: number;
-  lastReport: string;
+  contact_name: string;
+  contact_email: string;
+  contact_phone?: string | null;
+  advisor_name?: string | null;
+  advisor_email?: string | null;
+  status: string;
+  access_code_hint?: string | null;
 };
 
 type Task = {
   id: string;
   title: string;
-  chapter: string;
-  due: string;
-  priority: "High" | "Normal";
-  done: boolean;
+  description?: string | null;
+  assigned_chapter_id?: string;
+  due_date?: string | null;
+  priority: string;
+  status: string;
+  completed_at?: string | null;
 };
 
-const chapters: Chapter[] = [
-  { id: "cedar-grove", name: "Cedar Grove", location: "Cary, NC", contact: "Maya Patel", email: "maya@cedargrove.org", status: "On track", completion: 100, mentors: 12, students: 48, lastReport: "Today" },
-  { id: "triangle-prep", name: "Triangle Prep", location: "Durham, NC", contact: "Noah Williams", email: "noah@triangleprep.org", status: "Needs follow-up", completion: 67, mentors: 8, students: 31, lastReport: "4 days ago" },
-  { id: "oak-city", name: "Oak City Scholars", location: "Raleigh, NC", contact: "Amara Johnson", email: "amara@oakcity.org", status: "New", completion: 0, mentors: 5, students: 18, lastReport: "Not yet" },
-];
-
-const initialTasks: Task[] = [
-  { id: "t1", title: "Submit your weekly chapter report", chapter: "Cedar Grove", due: "Today", priority: "High", done: false },
-  { id: "t2", title: "Share the AMC 8 practice set", chapter: "Cedar Grove", due: "Thu, Jul 17", priority: "Normal", done: true },
-  { id: "t3", title: "Confirm next Saturday’s mentor roster", chapter: "Cedar Grove", due: "Fri, Jul 18", priority: "Normal", done: false },
-];
-
-const events = [
-  { date: "JUL 19", title: "Summer Mentor Jam", meta: "Saturday · 10:00 AM ET", type: "Shared" },
-  { date: "JUL 24", title: "Chapter lead office hours", meta: "Thursday · 7:00 PM ET", type: "Leads" },
-  { date: "AUG 02", title: "MathCounts strategy lab", meta: "Saturday · 11:00 AM ET", type: "Students" },
-];
-
-const asView = (value: string | null): View => {
-  if (value === "apply" || value === "signin" || value === "portal" || value === "admin") return value;
-  return "home";
+type ChapterEvent = {
+  id: string;
+  title: string;
+  description?: string | null;
+  starts_at: string;
+  ends_at?: string | null;
+  location?: string | null;
+  link?: string | null;
+  chapter_id?: string | null;
 };
 
-function BrandMark() {
-  return <span className="brand-mark" aria-hidden="true"><span /><span /><span /></span>;
+type Report = {
+  id: string;
+  chapter_id?: string;
+  week_start: string;
+  sessions_held: number;
+  students_served: number;
+  mentors_present: number;
+  completed_weekly_tasks: boolean;
+  highlights?: string | null;
+  blockers?: string | null;
+  submitted_at: string;
+};
+
+type Application = {
+  id: string;
+  contact_name: string;
+  contact_email: string;
+  contact_phone?: string | null;
+  organization_name: string;
+  location: string;
+  student_reach?: string | null;
+  why?: string | null;
+  status: string;
+  created_at: string;
+};
+
+type ChapterDashboardData = { chapter: Chapter; tasks: Task[]; events: ChapterEvent[]; reports: Report[] };
+type AdminData = { applications: Application[]; chapters: Chapter[]; reports: Report[]; tasks: Task[]; events: ChapterEvent[] };
+type AdminActionResult = Partial<AdminData> & { code?: string; chapter?: Chapter; overview?: AdminData };
+
+const emptyAdmin: AdminData = { applications: [], chapters: [], reports: [], tasks: [], events: [] };
+
+function thisMonday() {
+  const date = new Date();
+  const day = date.getDay();
+  date.setDate(date.getDate() - (day === 0 ? 6 : day - 1));
+  return date.toISOString().slice(0, 10);
 }
 
-function StatusPill({ children, tone = "gold" }: { children: React.ReactNode; tone?: "gold" | "green" | "muted" | "red" }) {
-  return <span className={`status-pill ${tone}`}>{children}</span>;
+async function invokePortal<T>(action: string, payload: Record<string, unknown> = {}) {
+  if (!supabase) throw new Error("The portal is not connected yet.");
+  const { data, error } = await supabase.functions.invoke("chapter-portal", { body: { action, ...payload } });
+  if (error) {
+    const response = (error as { context?: Response }).context;
+    if (response) {
+      try {
+        const details = await response.clone().json() as { error?: string };
+        if (details.error) throw new Error(details.error);
+      } catch (contextError) {
+        if (contextError instanceof Error && contextError.message !== "Unexpected end of JSON input") throw contextError;
+      }
+    }
+    throw new Error(error.message);
+  }
+  if (data?.error) throw new Error(data.error);
+  return data as T;
 }
 
-function Arrow() {
-  return <span className="arrow" aria-hidden="true">↗</span>;
+function Logo() {
+  return <span className="logo-mark" aria-hidden="true"><i /><i /><i /><i /></span>;
 }
 
-export default function Home() {
-  const [view, setView] = useState<View>(() => {
-    if (typeof window === "undefined") return "home";
-    return asView(new URLSearchParams(window.location.search).get("view"));
-  });
+function Button({ children, kind = "primary", ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { kind?: "primary" | "secondary" | "quiet" | "danger" }) {
+  return <button className={`button ${kind}`} {...props}>{children}</button>;
+}
+
+function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
+  return <label className="field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>;
+}
+
+function Status({ value }: { value: string }) {
+  return <span className={`status status-${value.replaceAll("_", "-")}`}>{value.replaceAll("_", " ")}</span>;
+}
+
+export default function Page() {
+  const [view, setView] = useState<View>("access");
+  const [theme, setTheme] = useState<Theme>("light");
   const [notice, setNotice] = useState("");
-  const [submittedApplication, setSubmittedApplication] = useState(false);
-  const [signInSent, setSignInSent] = useState(false);
-  const [portalDenied, setPortalDenied] = useState("");
-  const [adminDenied, setAdminDenied] = useState("");
-  const [liveChapterId, setLiveChapterId] = useState<string | null>(null);
-  const [liveChapterName, setLiveChapterName] = useState("Cedar Grove Chapter");
-  const [reportSubmitted, setReportSubmitted] = useState(false);
-  const [tasks, setTasks] = useState(initialTasks);
-  const [adminSearch, setAdminSearch] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [chapterToken, setChapterToken] = useState("");
+  const [dashboard, setDashboard] = useState<ChapterDashboardData | null>(null);
+  const [adminData, setAdminData] = useState<AdminData>(emptyAdmin);
+  const [adminReady, setAdminReady] = useState(false);
+  const [adminTab, setAdminTab] = useState<AdminTab>("applications");
+  const [issuedCode, setIssuedCode] = useState<{ name: string; code: string } | null>(null);
 
   const goTo = (next: View) => {
     setView(next);
     setNotice("");
     if (typeof window !== "undefined") {
-      window.history.pushState({}, "", next === "home" ? "/" : `/?view=${next}`);
+      window.history.pushState({}, "", next === "access" ? "/" : `/?view=${next}`);
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
   };
 
   useEffect(() => {
-    if (!supabase || view !== "portal") return;
-    let cancelled = false;
-    const verifyChapterAccess = async () => {
-      const { data: userData } = await supabase.auth.getUser();
-      if (cancelled) return;
-      if (!userData.user) {
-        setPortalDenied("Sign in with the email attached to your registered chapter.");
-        setView("signin");
-        return;
-      }
-      const { data: member } = await supabase
-        .from("chapter_members")
-        .select("chapter_id, chapters(name)")
-        .eq("user_id", userData.user.id)
-        .eq("status", "active")
-        .maybeSingle();
-      if (cancelled) return;
-      if (!member) {
-        setPortalDenied("This email is not attached to an active chapter yet. Ask your chapter lead to add you.");
-        setView("signin");
-        return;
-      }
-      const chapter = Array.isArray(member.chapters) ? member.chapters[0] : member.chapters;
-      setLiveChapterId(member.chapter_id);
-      setLiveChapterName(chapter?.name ? `${chapter.name} Chapter` : "Your chapter");
-    };
-    void verifyChapterAccess();
-    return () => { cancelled = true; };
-  }, [view]);
+    const route = new URLSearchParams(window.location.search).get("view");
+    const initialView: View = route === "apply" || route === "admin" ? route : "access";
+    const saved = localStorage.getItem("tmm-theme") as Theme | null;
+    const preferred = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    window.setTimeout(() => {
+      setTheme(saved === "dark" || saved === "light" ? saved : preferred);
+      setView(initialView);
+    }, 0);
+
+    const token = localStorage.getItem("tmm-chapter-session") ?? "";
+    if (!token || initialView !== "access") return;
+    void invokePortal<{ dashboard: ChapterDashboardData }>("chapter-dashboard", { token })
+      .then((result) => { setChapterToken(token); setDashboard(result.dashboard); setView("chapter"); })
+      .catch(() => { localStorage.removeItem("tmm-chapter-session"); setChapterToken(""); });
+  }, []);
 
   useEffect(() => {
-    if (!supabase || view !== "admin") return;
-    let cancelled = false;
-    const verifyAdminAccess = async () => {
-      const { data: userData } = await supabase.auth.getUser();
-      if (cancelled) return;
-      const role = userData.user?.app_metadata?.role;
-      if (!userData.user || role !== "admin") {
-        setAdminDenied("The director console is for approved Mastery Mentors admins only.");
-        setView("signin");
-      }
-    };
-    void verifyAdminAccess();
-    return () => { cancelled = true; };
-  }, [view]);
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("tmm-theme", theme);
+  }, [theme]);
 
-  const filteredChapters = useMemo(() => {
-    const q = adminSearch.toLowerCase().trim();
-    if (!q) return chapters;
-    return chapters.filter((chapter) => `${chapter.name} ${chapter.location} ${chapter.contact} ${chapter.email}`.toLowerCase().includes(q));
-  }, [adminSearch]);
-
-  const handleApplication = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const payload = {
-      contact_name: String(form.get("contact_name") || ""),
-      contact_email: String(form.get("contact_email") || ""),
-      organization_name: String(form.get("organization_name") || ""),
-      location: String(form.get("location") || ""),
-      student_reach: String(form.get("student_reach") || ""),
-      why: String(form.get("why") || ""),
-    };
-    if (supabase) {
-      const { error } = await supabase.from("chapter_applications").insert(payload);
-      if (error) {
-        setNotice(error.message);
-        return;
-      }
-    }
-    setSubmittedApplication(true);
-    setNotice("Application received. We’ll be in touch within 3–5 days.");
+  const setMessage = (message: string) => {
+    setNotice(message);
+    window.setTimeout(() => setNotice(""), 5000);
   };
 
-  const handleSignIn = async (event: FormEvent<HTMLFormElement>) => {
+  const chapterLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    setBusy(true);
+    try {
+      const form = new FormData(event.currentTarget);
+      const result = await invokePortal<{ token: string; dashboard: ChapterDashboardData }>("chapter-login", { code: form.get("code") });
+      localStorage.setItem("tmm-chapter-session", result.token);
+      setChapterToken(result.token);
+      setDashboard(result.dashboard);
+      goTo("chapter");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "That code could not be used.");
+    } finally { setBusy(false); }
+  };
+
+  const chapterLogout = async () => {
+    if (chapterToken) void invokePortal("chapter-logout", { token: chapterToken }).catch(() => undefined);
+    localStorage.removeItem("tmm-chapter-session");
+    setChapterToken("");
+    setDashboard(null);
+    goTo("access");
+  };
+
+  const submitApplication = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!supabase) return setMessage("The application form is not connected yet.");
+    setBusy(true);
     const form = new FormData(event.currentTarget);
-    const email = String(form.get("email") || "").trim();
-    if (supabase) {
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: `${window.location.origin}/?view=portal` },
-      });
-      if (error) {
-        setNotice(error.message);
-        return;
-      }
-      setSignInSent(true);
-      setNotice("Magic link sent. Access is granted only when your email belongs to an active chapter.");
-      return;
-    }
-    setLiveChapterName(email ? `${email.split("@")[0]} Chapter` : "Cedar Grove Chapter");
-    goTo("portal");
+    const payload = {
+      contact_name: String(form.get("contact_name") ?? ""),
+      contact_email: String(form.get("contact_email") ?? ""),
+      contact_phone: String(form.get("contact_phone") ?? ""),
+      organization_name: String(form.get("organization_name") ?? ""),
+      location: String(form.get("location") ?? ""),
+      student_reach: String(form.get("student_reach") ?? ""),
+      why: String(form.get("why") ?? ""),
+    };
+    const { error } = await supabase.from("chapter_applications").insert(payload);
+    setBusy(false);
+    if (error) return setMessage(error.message);
+    event.currentTarget.reset();
+    setMessage("Application sent. We’ll review it and contact you by email.");
+    goTo("access");
   };
 
   const submitReport = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const payload = {
-      chapter_id: liveChapterId,
-      week_start: new Date().toISOString().slice(0, 10),
-      sessions_held: Number(form.get("sessions_held") || 0),
-      students_served: Number(form.get("students_served") || 0),
-      mentors_present: Number(form.get("mentors_present") || 0),
-      completed_weekly_tasks: form.get("completed_weekly_tasks") === "on",
-      highlights: String(form.get("highlights") || ""),
-      blockers: String(form.get("blockers") || ""),
-    };
-    if (supabase && liveChapterId) {
-      const { error } = await supabase.from("weekly_reports").upsert(payload, { onConflict: "chapter_id,week_start" });
-      if (error) {
-        setNotice(error.message);
-        return;
-      }
-    }
-    setReportSubmitted(true);
-    setNotice("Weekly report saved. Thank you for keeping the network in rhythm.");
+    setBusy(true);
+    try {
+      const form = new FormData(event.currentTarget);
+      const report = {
+        week_start: String(form.get("week_start") ?? thisMonday()),
+        sessions_held: Number(form.get("sessions_held") ?? 0),
+        students_served: Number(form.get("students_served") ?? 0),
+        mentors_present: Number(form.get("mentors_present") ?? 0),
+        completed_weekly_tasks: form.get("completed_weekly_tasks") === "on",
+        highlights: String(form.get("highlights") ?? ""),
+        blockers: String(form.get("blockers") ?? ""),
+      };
+      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-submit-report", { token: chapterToken, report });
+      setDashboard(result.dashboard);
+      setMessage("Weekly update saved.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "The report could not be saved."); }
+    finally { setBusy(false); }
   };
 
-  const toggleTask = (id: string) => setTasks((current) => current.map((task) => task.id === id ? { ...task, done: !task.done } : task));
+  const toggleTask = async (task: Task) => {
+    setBusy(true);
+    try {
+      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-toggle-task", { token: chapterToken, task_id: task.id, complete: task.status !== "complete" });
+      setDashboard(result.dashboard);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "The task could not be updated."); }
+    finally { setBusy(false); }
+  };
 
-  const createTask = async (event: FormEvent<HTMLFormElement>) => {
+  const loadAdmin = async () => {
+    const data = await invokePortal<AdminData>("admin-overview");
+    setAdminData(data);
+    setAdminReady(true);
+  };
+
+  const adminLogin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!supabase) return setMessage("Admin sign-in is not connected yet.");
+    setBusy(true);
+    const form = new FormData(event.currentTarget);
+    const { error } = await supabase.auth.signInWithPassword({ email: String(form.get("email") ?? ""), password: String(form.get("password") ?? "") });
+    if (error) { setBusy(false); return setMessage(error.message); }
+    try { await loadAdmin(); }
+    catch (error) { await supabase.auth.signOut(); setMessage(error instanceof Error ? error.message : "Admin access is not enabled for this account."); }
+    finally { setBusy(false); }
+  };
+
+  const adminAction = async (action: string, payload: Record<string, unknown>, codeName?: string) => {
+    setBusy(true);
+    try {
+      const result = await invokePortal<AdminActionResult>(action, payload);
+      if ("overview" in result && result.overview) setAdminData(result.overview as AdminData);
+      else if ("applications" in result) setAdminData(result as AdminData);
+      else await loadAdmin();
+      if (result.code) setIssuedCode({ name: result.chapter?.name ?? codeName ?? "Chapter", code: result.code });
+      setMessage("Saved.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "The change could not be saved."); }
+    finally { setBusy(false); }
+  };
+
+  const adminLogout = async () => {
+    if (supabase) await supabase.auth.signOut();
+    setAdminReady(false);
+    setAdminData(emptyAdmin);
+    goTo("access");
+  };
+
+  return <main className="app-root">
+    <header className="topbar">
+      <button className="brand" onClick={() => goTo("access")}><Logo /><span>The Mastery Mentors</span><small>Chapters</small></button>
+      <div className="topbar-actions">
+        {view !== "chapter" && view !== "admin" && <button className="nav-link" onClick={() => goTo(view === "apply" ? "access" : "apply")}>{view === "apply" ? "Chapter access" : "Apply for a chapter"}</button>}
+        <button className="theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label={`Use ${theme === "light" ? "dark" : "light"} mode`}><span>{theme === "light" ? "☾" : "☀"}</span></button>
+      </div>
+    </header>
+
+    {notice && <div className="toast" role="status">{notice}<button onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}
+
+    {view === "access" && <AccessView onLogin={chapterLogin} busy={busy} goTo={goTo} />}
+    {view === "apply" && <ApplicationView onSubmit={submitApplication} busy={busy} />}
+    {view === "chapter" && dashboard && <ChapterView data={dashboard} onReport={submitReport} onToggleTask={toggleTask} onLogout={chapterLogout} busy={busy} />}
+    {view === "admin" && <AdminView data={adminData} ready={adminReady} tab={adminTab} setTab={setAdminTab} onLogin={adminLogin} onAction={adminAction} onLogout={adminLogout} issuedCode={issuedCode} setIssuedCode={setIssuedCode} busy={busy} />}
+  </main>;
+}
+
+function AccessView({ onLogin, busy, goTo }: { onLogin: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; goTo: (view: View) => void }) {
+  return <section className="access-shell">
+    <div className="access-card">
+      <div className="card-heading"><span className="tiny-label">Chapter access</span><h1>Enter your chapter code</h1><p>Use the code provided when your chapter was approved.</p></div>
+      <form onSubmit={onLogin} className="stack-form">
+        <Field label="Chapter code"><input className="code-input" name="code" autoComplete="one-time-code" autoCapitalize="characters" placeholder="TMM-••••-••••-••••" required /></Field>
+        <Button type="submit" disabled={busy}>{busy ? "Checking…" : "Open chapter dashboard"}</Button>
+      </form>
+      <div className="access-help"><span>Don’t have a code?</span><button onClick={() => goTo("apply")}>Apply to start a chapter</button></div>
+    </div>
+    <button className="admin-entry" onClick={() => goTo("admin")}>Admin sign in</button>
+  </section>;
+}
+
+function ApplicationView({ onSubmit, busy }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; busy: boolean }) {
+  return <section className="form-page">
+    <div className="page-heading"><span className="tiny-label">Chapter application</span><h1>Start a chapter</h1><p>Tell us who will lead it and where it will operate. We’ll review the application before issuing a chapter code.</p></div>
+    <form className="surface-form" onSubmit={onSubmit}>
+      <div className="form-grid">
+        <Field label="Lead name"><input name="contact_name" required /></Field>
+        <Field label="Lead email"><input name="contact_email" type="email" required /></Field>
+        <Field label="Phone"><input name="contact_phone" type="tel" required /></Field>
+        <Field label="School or organization"><input name="organization_name" required /></Field>
+        <Field label="City and state"><input name="location" placeholder="Raleigh, NC" required /></Field>
+        <Field label="Students you plan to serve"><select name="student_reach" required defaultValue=""><option value="" disabled>Select one</option><option>K–5</option><option>Middle school</option><option>K–8</option><option>Competition math</option></select></Field>
+      </div>
+      <Field label="Why do you want to start this chapter?"><textarea name="why" rows={5} required /></Field>
+      <div className="form-footer"><p>Applications are reviewed manually. Approved chapters receive a private access code.</p><Button type="submit" disabled={busy}>{busy ? "Sending…" : "Send application"}</Button></div>
+    </form>
+  </section>;
+}
+
+function ChapterView({ data, onReport, onToggleTask, onLogout, busy }: { data: ChapterDashboardData; onReport: (event: FormEvent<HTMLFormElement>) => void; onToggleTask: (task: Task) => void; onLogout: () => void; busy: boolean }) {
+  const latest = data.reports[0];
+  return <section className="workspace">
+    <aside className="sidebar">
+      <div><span className="tiny-label">Current chapter</span><h2>{data.chapter.name}</h2><p>{data.chapter.location}</p></div>
+      <nav><a href="#weekly">Weekly update</a><a href="#tasks">Tasks</a><a href="#events">Events</a><a href="#history">History</a></nav>
+      <button className="sidebar-action" onClick={onLogout}>Sign out chapter</button>
+    </aside>
+    <div className="workspace-content">
+      <div className="workspace-heading"><div><span className="tiny-label">Chapter dashboard</span><h1>{data.chapter.name}</h1></div><Status value={data.chapter.status} /></div>
+      <section className="work-section weekly-section" id="weekly">
+        <div className="section-title"><div><h2>Weekly update</h2><p>One report per week. Submitting again updates the same week.</p></div>{latest && <span className="last-saved">Last saved {new Date(latest.submitted_at).toLocaleDateString()}</span>}</div>
+        <form className="weekly-form" onSubmit={onReport}>
+          <div className="form-grid four">
+            <Field label="Week starting"><input type="date" name="week_start" defaultValue={thisMonday()} required /></Field>
+            <Field label="Sessions held"><input type="number" min="0" name="sessions_held" defaultValue={latest?.week_start === thisMonday() ? latest.sessions_held : 0} required /></Field>
+            <Field label="Students served"><input type="number" min="0" name="students_served" defaultValue={latest?.week_start === thisMonday() ? latest.students_served : 0} required /></Field>
+            <Field label="Mentors present"><input type="number" min="0" name="mentors_present" defaultValue={latest?.week_start === thisMonday() ? latest.mentors_present : 0} required /></Field>
+          </div>
+          <label className="check-row"><input type="checkbox" name="completed_weekly_tasks" defaultChecked={latest?.week_start === thisMonday() ? latest.completed_weekly_tasks : false} /><span>We completed the required weekly tasks.</span></label>
+          <div className="form-grid"><Field label="What did you do this week?"><textarea name="highlights" rows={4} defaultValue={latest?.week_start === thisMonday() ? latest.highlights ?? "" : ""} placeholder="Sessions, outreach, curriculum work…" /></Field><Field label="Do you need help with anything?"><textarea name="blockers" rows={4} defaultValue={latest?.week_start === thisMonday() ? latest.blockers ?? "" : ""} placeholder="Optional" /></Field></div>
+          <div className="align-right"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save weekly update"}</Button></div>
+        </form>
+      </section>
+      <div className="content-grid">
+        <section className="work-section" id="tasks"><div className="section-title"><div><h2>Assigned tasks</h2><p>Check tasks off when they’re complete.</p></div></div><div className="item-list">{data.tasks.length ? data.tasks.map((task) => <button className={`task-item ${task.status === "complete" ? "complete" : ""}`} onClick={() => onToggleTask(task)} key={task.id} disabled={busy}><span className="check-box">{task.status === "complete" ? "✓" : ""}</span><span><strong>{task.title}</strong><small>{task.due_date ? `Due ${new Date(`${task.due_date}T12:00:00`).toLocaleDateString()}` : "No due date"}{task.priority === "high" ? " · High priority" : ""}</small></span></button>) : <Empty text="No assigned tasks." />}</div></section>
+        <section className="work-section" id="events"><div className="section-title"><div><h2>Upcoming events</h2><p>Shared and chapter-specific events.</p></div></div><div className="item-list">{data.events.length ? data.events.map((event) => <div className="event-item" key={event.id}><time>{new Date(event.starts_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time><span><strong>{event.title}</strong><small>{new Date(event.starts_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}{event.location ? ` · ${event.location}` : ""}</small></span></div>) : <Empty text="No upcoming events." />}</div></section>
+      </div>
+      <section className="work-section" id="history"><div className="section-title"><div><h2>Report history</h2><p>Your most recent weekly submissions.</p></div></div>{data.reports.length ? <div className="simple-table"><div className="table-head"><span>Week</span><span>Sessions</span><span>Students</span><span>Tasks done</span></div>{data.reports.map((report) => <div className="table-row" key={report.id}><span>{new Date(`${report.week_start}T12:00:00`).toLocaleDateString()}</span><span>{report.sessions_held}</span><span>{report.students_served}</span><span>{report.completed_weekly_tasks ? "Yes" : "No"}</span></div>)}</div> : <Empty text="No weekly reports yet." />}</section>
+    </div>
+  </section>;
+}
+
+function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issuedCode, setIssuedCode, busy }: { data: AdminData; ready: boolean; tab: AdminTab; setTab: (tab: AdminTab) => void; onLogin: (event: FormEvent<HTMLFormElement>) => void; onAction: (action: string, payload: Record<string, unknown>, codeName?: string) => Promise<void>; onLogout: () => void; issuedCode: { name: string; code: string } | null; setIssuedCode: (value: { name: string; code: string } | null) => void; busy: boolean }) {
+  const pending = data.applications.filter((application) => application.status === "new" || application.status === "reviewing").length;
+  const latestReport = useMemo(() => new Map(data.reports.map((report) => [report.chapter_id, report])), [data.reports]);
+  if (!ready) return <section className="access-shell"><div className="access-card"><div className="card-heading"><span className="tiny-label">Admin</span><h1>Sign in</h1><p>Use the admin account configured in Supabase.</p></div><form className="stack-form" onSubmit={onLogin}><Field label="Email"><input name="email" type="email" required /></Field><Field label="Password"><input name="password" type="password" required /></Field><Button type="submit" disabled={busy}>{busy ? "Signing in…" : "Open admin dashboard"}</Button></form></div></section>;
+
+  const submitChapter = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const payload = {
-      title: String(form.get("task_title") || ""),
-      description: String(form.get("task_description") || ""),
-      assigned_chapter_id: String(form.get("assigned_chapter_id") || ""),
-      due_date: String(form.get("task_due") || "") || null,
-      priority: String(form.get("task_priority") || "normal"),
-      status: "open",
-    };
-    if (supabase) {
-      const { error } = await supabase.from("tasks").insert(payload);
-      if (error) {
-        setNotice(error.message);
-        return;
-      }
-    }
-    const assigned = chapters.find((chapter) => chapter.id === payload.assigned_chapter_id)?.name || "Chapter";
-    setTasks((current) => [{ id: `local-${Date.now()}`, title: payload.title, chapter: assigned, due: payload.due_date || "No due date", priority: payload.priority === "high" ? "High" : "Normal", done: false }, ...current]);
-    setNotice("Task assigned. It will appear in the chapter workspace.");
+    void onAction("admin-create-chapter", { chapter: Object.fromEntries(form) }, String(form.get("name") ?? "Chapter"));
+    event.currentTarget.reset();
+  };
+  const submitTask = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void onAction("admin-assign-task", { task: Object.fromEntries(new FormData(event.currentTarget)) });
+    event.currentTarget.reset();
+  };
+  const submitEvent = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void onAction("admin-create-event", { event: Object.fromEntries(new FormData(event.currentTarget)) });
     event.currentTarget.reset();
   };
 
-  const createEvent = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const payload = {
-      title: String(form.get("event_title") || ""),
-      starts_at: String(form.get("event_starts_at") || ""),
-      location: String(form.get("event_location") || ""),
-      description: String(form.get("event_description") || ""),
-    };
-    if (supabase) {
-      const { error } = await supabase.from("events").insert(payload);
-      if (error) {
-        setNotice(error.message);
-        return;
-      }
-    }
-    setNotice("Event created and ready to share with chapters.");
-    event.currentTarget.reset();
-  };
+  return <section className="admin-layout">
+    <aside className="admin-sidebar"><div><span className="tiny-label">Administration</span><h2>Chapter operations</h2></div><nav><button className={tab === "applications" ? "active" : ""} onClick={() => setTab("applications")}>Applications {pending > 0 && <b>{pending}</b>}</button><button className={tab === "chapters" ? "active" : ""} onClick={() => setTab("chapters")}>Chapters</button><button className={tab === "work" ? "active" : ""} onClick={() => setTab("work")}>Tasks & events</button></nav><button className="sidebar-action" onClick={onLogout}>Sign out admin</button></aside>
+    <div className="admin-content">
+      <div className="workspace-heading"><div><span className="tiny-label">Admin dashboard</span><h1>{tab === "applications" ? "Applications" : tab === "chapters" ? "Chapters" : "Tasks & events"}</h1></div></div>
+      {issuedCode && <div className="code-result"><div><span className="tiny-label">New chapter code · shown once</span><strong>{issuedCode.name}</strong><code>{issuedCode.code}</code></div><div><Button kind="secondary" onClick={() => navigator.clipboard.writeText(issuedCode.code)}>Copy code</Button><Button kind="quiet" onClick={() => setIssuedCode(null)}>Dismiss</Button></div></div>}
 
-  return (
-    <main className="site-shell">
-      <header className="site-nav">
-        <button className="brand" onClick={() => goTo("home")} aria-label="The Mastery Mentors home">
-          <BrandMark />
-          <span><strong>The Mastery</strong><small>Mentors</small></span>
-        </button>
-        <nav className="nav-links" aria-label="Main navigation">
-          <button className={view === "home" ? "active" : ""} onClick={() => goTo("home")}>Home</button>
-          <a href={view === "home" ? "#how" : "/#how"}>How it works</a>
-          <button className={view === "apply" ? "active" : ""} onClick={() => goTo("apply")}>Start a chapter</button>
-          <button className={view === "admin" ? "active" : ""} onClick={() => goTo("admin")}>Director console</button>
-        </nav>
-        <div className="nav-actions">
-          {supabase && <span className="connection-dot" title="Supabase connection configured" aria-label="Supabase connection configured" />}
-          <button className="sign-in-link" onClick={() => goTo("signin")}>Chapter sign in <Arrow /></button>
-        </div>
-      </header>
+      {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Approve to create the chapter and issue its access code.</p></div></div><div className="application-list">{data.applications.length ? data.applications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>{application.contact_name}</span><a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.why && <p>{application.why}</p>}<div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & create code</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}</div></article>) : <Empty text="No applications yet." />}</div></section>}
 
-      {notice && <div className="notice" role="status">{notice}<button onClick={() => setNotice("")} aria-label="Dismiss notification">×</button></div>}
+      {tab === "chapters" && <><section className="admin-section"><div className="section-title"><div><h2>Add a chapter manually</h2><p>Leave the code blank to generate one automatically.</p></div></div><form className="surface-form compact" onSubmit={submitChapter}><div className="form-grid three"><Field label="Chapter name"><input name="name" required /></Field><Field label="City and state"><input name="location" required /></Field><Field label="Lead name"><input name="contact_name" required /></Field><Field label="Lead email"><input name="contact_email" type="email" required /></Field><Field label="Lead phone"><input name="contact_phone" type="tel" /></Field><Field label="Custom code" hint="Optional · at least 10 letters or numbers"><input name="code" className="code-input small" /></Field><Field label="Advisor name"><input name="advisor_name" /></Field><Field label="Advisor email"><input name="advisor_email" type="email" /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>Add chapter</Button></div></form></section><section className="admin-section"><div className="section-title"><div><h2>Chapter directory</h2><p>Contacts, reporting status, and code management.</p></div></div>{data.chapters.length ? <div className="chapter-list">{data.chapters.map((chapter) => { const report = latestReport.get(chapter.id); return <article className="chapter-row" key={chapter.id}><div><strong>{chapter.name}</strong><span>{chapter.location}</span></div><div><span>{chapter.contact_name}</span><a href={`mailto:${chapter.contact_email}`}>{chapter.contact_email}</a>{chapter.contact_phone && <span>{chapter.contact_phone}</span>}</div><div><span>Latest report</span><strong className="plain-strong">{report ? new Date(`${report.week_start}T12:00:00`).toLocaleDateString() : "Not submitted"}</strong></div><div className="chapter-row-end"><Status value={chapter.status} /><span className="code-hint">Code ends •{chapter.access_code_hint ?? "—"}</span><Button kind="secondary" disabled={busy} onClick={() => onAction("admin-reset-code", { chapter_id: chapter.id }, chapter.name)}>Reset code</Button></div></article>; })}</div> : <Empty text="No chapters have been added." />}</section></>}
 
-      {view === "home" && <HomeView goTo={goTo} />}
-      {view === "apply" && <ApplyView onSubmit={handleApplication} submitted={submittedApplication} />}
-      {view === "signin" && <SignInView onSubmit={handleSignIn} sent={signInSent} denied={portalDenied || adminDenied} goTo={goTo} />}
-      {view === "portal" && <PortalView chapterName={liveChapterName} tasks={tasks} toggleTask={toggleTask} onSubmitReport={submitReport} reportSubmitted={reportSubmitted} />}
-      {view === "admin" && <AdminView chapters={filteredChapters} search={adminSearch} setSearch={setAdminSearch} onCreateTask={createTask} onCreateEvent={createEvent} />}
-
-      <footer className="site-footer">
-        <div className="footer-brand"><BrandMark /><span>Chapter operations for a math access movement.</span></div>
-        <div className="footer-links"><a href="https://themasterymentors.vercel.app" target="_blank" rel="noreferrer">Main site <Arrow /></a><a href="mailto:themasterymentors@gmail.com">Email the team <Arrow /></a></div>
-        <small>© 2026 The Mastery Mentors</small>
-      </footer>
-    </main>
-  );
+      {tab === "work" && <div className="admin-two-column"><section className="admin-section"><div className="section-title"><div><h2>Assign a task</h2><p>Tasks appear immediately in the selected chapter dashboard.</p></div></div><form className="surface-form compact" onSubmit={submitTask}><Field label="Task"><input name="title" required /></Field><Field label="Chapter"><select name="chapter_id" required defaultValue=""><option value="" disabled>Select a chapter</option>{data.chapters.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.name}</option>)}</select></Field><div className="form-grid"><Field label="Due date"><input name="due_date" type="date" /></Field><Field label="Priority"><select name="priority" defaultValue="normal"><option value="normal">Normal</option><option value="high">High</option></select></Field></div><Field label="Details"><textarea name="description" rows={3} /></Field><Button type="submit" disabled={busy}>Assign task</Button></form><div className="admin-item-list">{data.tasks.slice(0, 12).map((task) => <div key={task.id}><span><strong>{task.title}</strong><small>{data.chapters.find((chapter) => chapter.id === task.assigned_chapter_id)?.name ?? "Chapter"}</small></span><Status value={task.status} /></div>)}</div></section><section className="admin-section"><div className="section-title"><div><h2>Create an event</h2><p>Leave chapter blank to share with every chapter.</p></div></div><form className="surface-form compact" onSubmit={submitEvent}><Field label="Event"><input name="title" required /></Field><Field label="Chapter"><select name="chapter_id" defaultValue=""><option value="">All chapters</option>{data.chapters.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.name}</option>)}</select></Field><div className="form-grid"><Field label="Starts"><input name="starts_at" type="datetime-local" required /></Field><Field label="Ends"><input name="ends_at" type="datetime-local" /></Field></div><Field label="Location"><input name="location" /></Field><Field label="Link"><input name="link" type="url" /></Field><Field label="Details"><textarea name="description" rows={3} /></Field><Button type="submit" disabled={busy}>Create event</Button></form><div className="admin-item-list">{data.events.slice(0, 12).map((event) => <div key={event.id}><span><strong>{event.title}</strong><small>{new Date(event.starts_at).toLocaleString()}</small></span>{event.chapter_id ? <Status value="chapter" /> : <Status value="all chapters" />}</div>)}</div></section></div>}
+    </div>
+  </section>;
 }
 
-function HomeView({ goTo }: { goTo: (view: View) => void }) {
-  return <>
-    <section className="hero home-hero">
-      <div className="hero-copy">
-        <p className="eyebrow">CHAPTER OPERATIONS · THE MASTERY MENTORS</p>
-        <h1>Build a chapter.<br /><em>Build confidence.</em></h1>
-        <p className="hero-lede">A simple home base for the people bringing free, high-quality math mentorship closer to their communities.</p>
-        <div className="hero-actions"><button className="button primary" onClick={() => goTo("apply")}>Start a chapter <Arrow /></button><button className="button outline" onClick={() => goTo("signin")}>Registered chapter sign in</button></div>
-        <div className="hero-footnote"><span className="gold-rule" /> <span>Free K–8 math mentorship · student-led · growing together</span></div>
-      </div>
-      <div className="hero-visual" aria-label="A chapter network illustration">
-        <div className="visual-caption"><span className="live-dot" /> NETWORK VIEW <span>01 / 03</span></div>
-        <div className="orbit-stage"><div className="orbit-ring ring-one" /><div className="orbit-ring ring-two" /><div className="orbit-dot dot-main">TMM</div><div className="orbit-dot dot-one">CG</div><div className="orbit-dot dot-two">TP</div><div className="orbit-dot dot-three">OC</div></div>
-        <div className="visual-bottom"><span>01</span><span>Every chapter has a rhythm.<br /><b>We make it easier to keep.</b></span></div>
-      </div>
-    </section>
-
-    <section className="stat-strip"><div><strong>65+</strong><span>students reached</span></div><div><strong>17</strong><span>student mentors</span></div><div><strong>100%</strong><span>free for families</span></div><div><strong>∞</strong><span>room to grow</span></div></section>
-
-    <section className="how-section" id="how"><div className="section-heading"><p className="eyebrow">A CLEARER WEEK</p><h2>Everything your chapter needs<br /><em>to keep moving.</em></h2><p>From the first “we should start this” to a full calendar of students, mentors, and math moments.</p></div><div className="how-grid"><article><span className="card-index">01</span><h3>Make it official</h3><p>Tell us where you are, who’s leading, and what access looks like in your community.</p><button onClick={() => goTo("apply")} className="text-link">Start the intake <Arrow /></button></article><article><span className="card-index">02</span><h3>Report the rhythm</h3><p>A five-minute weekly check-in keeps your chapter supported and your impact visible.</p><button onClick={() => goTo("signin")} className="text-link">See the chapter view <Arrow /></button></article><article><span className="card-index">03</span><h3>Grow together</h3><p>Get shared events, practical tasks, and a direct line to the people helping chapters thrive.</p><button onClick={() => goTo("admin")} className="text-link">Preview the console <Arrow /></button></article></div></section>
-
-    <section className="quote-band"><div className="quote-mark">“</div><blockquote>Math access is not a one-time event. It is a weekly practice — and every chapter makes that practice more possible.</blockquote><span>THE MASTERY MENTORS · CHAPTER NETWORK</span></section>
-  </>;
-}
-
-function ApplyView({ onSubmit, submitted }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; submitted: boolean }) {
-  return <section className="page-wrap form-page"><div className="page-intro"><p className="eyebrow">01 / START A CHAPTER</p><h1>Make math access<br /><em>local.</em></h1><p>We’ll help you turn a strong idea into a chapter with a clear weekly rhythm, shared resources, and a support system behind you.</p></div><div className="form-layout"><div className="side-note"><div className="note-card"><span className="note-number">A / 01</span><h2>What happens next?</h2><p>We review your interest form, follow up with a short conversation, and share the chapter starter kit if it’s a fit.</p><div className="note-line"><span className="gold-rule" /> <span>Typical reply: 3–5 days</span></div></div><div className="mini-list"><div><b>01</b><span>Lead contact</span></div><div><b>02</b><span>Chapter shape</span></div><div><b>03</b><span>Local reach</span></div></div></div>{submitted ? <div className="success-card"><span className="success-icon">✓</span><p className="eyebrow">APPLICATION RECEIVED</p><h2>Your chapter idea is<br /><em>in motion.</em></h2><p>We’ll be in touch soon. In the meantime, keep gathering the people who want to make math feel more possible.</p></div> : <form className="portal-form" onSubmit={onSubmit}><div className="form-section-label">ABOUT YOU</div><div className="field-grid"><label>Full name<input name="contact_name" required placeholder="Your name" /></label><label>Email<input name="contact_email" type="email" required placeholder="you@example.com" /></label></div><div className="form-section-label">ABOUT THE CHAPTER</div><div className="field-grid"><label>Chapter or organization name<input name="organization_name" required placeholder="e.g. Oak City Scholars" /></label><label>City + state<input name="location" required placeholder="Raleigh, NC" /></label></div><label>Who would you serve?<select name="student_reach" defaultValue=""><option value="" disabled>Select a starting point</option><option>K–5 students</option><option>Middle school students</option><option>K–8 students</option><option>Competition prep students</option></select></label><label>What makes you want to start a chapter?<textarea name="why" required rows={4} placeholder="Tell us about the need you see and the people ready to help." /></label><button className="button primary full" type="submit">Send chapter interest form <Arrow /></button><p className="form-legal">By submitting, you agree to hear from The Mastery Mentors about chapter formation.</p></form>}</div></section>;
-}
-
-function SignInView({ onSubmit, sent, denied, goTo }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; sent: boolean; denied: string; goTo: (view: View) => void }) {
-  return <section className="page-wrap signin-page"><div className="signin-card"><div className="signin-copy"><p className="eyebrow">02 / REGISTERED CHAPTERS ONLY</p><h1>Welcome back<br /><em>to the work.</em></h1><p>This space is for active chapter leads and mentors. Use the email attached to your chapter to receive a secure sign-in link.</p><div className="privacy-note"><span className="lock-shape">⌁</span><span><b>Private by design.</b><br />Chapter records stay visible to the people responsible for them.</span></div></div><div className="signin-form-wrap">{sent ? <div className="success-card compact"><span className="success-icon">✦</span><p className="eyebrow">CHECK YOUR INBOX</p><h2>Your secure link<br /><em>is on the way.</em></h2><p>Open the link on this device to continue. If you don’t see it, check spam or email the chapter team.</p></div> : <form className="portal-form" onSubmit={onSubmit}><div className="form-section-label">CHAPTER ACCESS</div><label>Chapter email<input name="email" type="email" required placeholder="lead@yourchapter.org" /></label><button className="button primary full" type="submit">Send secure sign-in link <Arrow /></button><p className="form-legal">No chapter account? <button type="button" className="inline-link" onClick={() => goTo("apply")}>Start a chapter application</button></p>{denied && <p className="form-error">{denied}</p>}</form>}</div></div></section>;
-}
-
-function PortalView({ chapterName, tasks, toggleTask, onSubmitReport, reportSubmitted }: { chapterName: string; tasks: Task[]; toggleTask: (id: string) => void; onSubmitReport: (event: FormEvent<HTMLFormElement>) => void; reportSubmitted: boolean }) {
-  const completed = tasks.filter((task) => task.done).length;
-  return <section className="workspace-wrap"><aside className="workspace-sidebar"><div className="workspace-label">CHAPTER WORKSPACE</div><div className="workspace-chapter"><span className="chapter-avatar">CG</span><span><b>{chapterName}</b><small>Active chapter</small></span></div><div className="workspace-nav"><span className="active">Overview</span><span>Weekly report</span><span>Tasks</span><span>Events</span><span>Resources</span></div><div className="sidebar-help"><span className="gold-rule" /><b>Need a hand?</b><p>Email the chapter team and we’ll help you find the next right step.</p><a href="mailto:themasterymentors@gmail.com">Get support <Arrow /></a></div></aside><div className="workspace-main"><div className="workspace-topline"><div><p className="eyebrow">WEEK OF JULY 14–20, 2026</p><h1>Your chapter, <em>in rhythm.</em></h1></div><StatusPill tone="green">Live chapter</StatusPill></div><div className="metric-grid"><div><span>WEEKLY TASKS</span><strong>{completed} <small>/ {tasks.length}</small></strong><em>completed</em></div><div><span>ACTIVE MENTORS</span><strong>12</strong><em>+2 this month</em></div><div><span>STUDENTS REACHED</span><strong>48</strong><em>across 4 groups</em></div><div><span>REPORT STREAK</span><strong>06</strong><em>weeks in a row</em></div></div><div className="workspace-columns"><div className="workspace-panel report-panel"><div className="panel-heading"><div><p className="eyebrow">THE WEEKLY CHECK-IN</p><h2>{reportSubmitted ? "Your report is saved." : "What moved this week?"}</h2></div><span className="panel-count">5 MIN</span></div>{reportSubmitted ? <div className="report-saved"><span className="success-icon">✓</span><h3>Thanks for keeping the network in rhythm.</h3><p>Your chapter lead team can see this week’s update. You can submit another report next week.</p></div> : <form className="portal-form" onSubmit={onSubmitReport}><div className="field-grid three"><label>Sessions held<input name="sessions_held" type="number" min="0" defaultValue="2" /></label><label>Students served<input name="students_served" type="number" min="0" defaultValue="48" /></label><label>Mentors present<input name="mentors_present" type="number" min="0" defaultValue="12" /></label></div><label className="check-field"><input name="completed_weekly_tasks" type="checkbox" /> <span>We completed our weekly chapter tasks.</span></label><label>One bright spot<textarea name="highlights" rows={3} placeholder="A student breakthrough, a mentor win, a new partner…" /></label><label>Anything blocking momentum?<textarea name="blockers" rows={3} placeholder="Optional — tell us where support would help." /></label><button className="button primary" type="submit">Save weekly report <Arrow /></button></form>}</div><div className="workspace-sidepanels"><div className="workspace-panel task-panel"><div className="panel-heading"><div><p className="eyebrow">YOUR TASKS</p><h2>Keep the promise.</h2></div><span className="panel-count">{completed}/{tasks.length}</span></div><div className="task-list">{tasks.map((task) => <label className={`task-row ${task.done ? "done" : ""}`} key={task.id}><input type="checkbox" checked={task.done} onChange={() => toggleTask(task.id)} /><span><b>{task.title}</b><small>{task.due} · {task.priority} priority</small></span></label>)}</div></div><div className="workspace-panel event-panel"><div className="panel-heading"><div><p className="eyebrow">UP NEXT</p><h2>Shared calendar.</h2></div><Arrow /></div>{events.slice(0, 2).map((event) => <div className="event-row" key={event.title}><span className="event-date">{event.date}</span><span><b>{event.title}</b><small>{event.meta}</small></span></div>)}</div></div></div></div></section>;
-}
-
-function AdminView({ chapters, search, setSearch, onCreateTask, onCreateEvent }: { chapters: Chapter[]; search: string; setSearch: (value: string) => void; onCreateTask: (event: FormEvent<HTMLFormElement>) => void; onCreateEvent: (event: FormEvent<HTMLFormElement>) => void }) {
-  return <section className="admin-wrap"><div className="admin-header"><div><p className="eyebrow">03 / DIRECTOR CONSOLE</p><h1>The whole network,<br /><em>in one view.</em></h1><p>Track chapter health, see the people behind the work, and make the next step obvious.</p></div><StatusPill tone="green">Operations live</StatusPill></div><div className="admin-metrics"><div><span>ACTIVE CHAPTERS</span><strong>03</strong><em>+1 this quarter</em></div><div><span>WEEKLY REPORTS</span><strong>67%</strong><em>2 due today</em></div><div><span>STUDENTS REACHED</span><strong>97</strong><em>across the network</em></div><div><span>OPEN TASKS</span><strong>08</strong><em>3 high priority</em></div></div><div className="admin-grid"><div className="admin-panel chapters-panel"><div className="admin-panel-heading"><div><p className="eyebrow">CHAPTER DIRECTORY</p><h2>People + progress.</h2></div><label className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search chapters or contacts" /></label></div><div className="table-wrap"><table><thead><tr><th>Chapter</th><th>Lead contact</th><th>Weekly rhythm</th><th>Students</th><th>Status</th></tr></thead><tbody>{chapters.map((chapter) => <tr key={chapter.id}><td><b>{chapter.name}</b><small>{chapter.location}</small></td><td><b>{chapter.contact}</b><small>{chapter.email}</small></td><td><div className="progress-cell"><span><i style={{ width: `${chapter.completion}%` }} /></span><small>{chapter.completion}% · {chapter.lastReport}</small></div></td><td>{chapter.students}</td><td><StatusPill tone={chapter.status === "On track" ? "green" : chapter.status === "New" ? "muted" : "red"}>{chapter.status}</StatusPill></td></tr>)}</tbody></table></div><div className="directory-foot"><span>Showing {chapters.length} chapters</span><button className="text-link">Export directory <Arrow /></button></div></div><div className="admin-panel assign-panel"><div className="admin-panel-heading"><div><p className="eyebrow">ASSIGN A TASK</p><h2>Make momentum visible.</h2></div></div><form className="portal-form compact-form" onSubmit={onCreateTask}><label>Task title<input name="task_title" required placeholder="e.g. Share the new lesson plan" /></label><label>Assign to<select name="assigned_chapter_id" defaultValue="cedar-grove">{chapters.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.name}</option>)}</select></label><div className="field-grid"><label>Due date<input name="task_due" type="date" /></label><label>Priority<select name="task_priority" defaultValue="normal"><option value="normal">Normal</option><option value="high">High</option></select></label></div><label>Details<textarea name="task_description" rows={3} placeholder="What does done look like?" /></label><button className="button primary full" type="submit">Assign task <Arrow /></button></form></div><div className="admin-panel event-admin-panel"><div className="admin-panel-heading"><div><p className="eyebrow">SHARED EVENTS</p><h2>Give the network<br /><em>something to gather around.</em></h2></div></div><form className="portal-form compact-form" onSubmit={onCreateEvent}><label>Event name<input name="event_title" required placeholder="e.g. Chapter lead office hours" /></label><div className="field-grid"><label>Date + time<input name="event_starts_at" type="datetime-local" required /></label><label>Where<select name="event_location" defaultValue="Zoom"><option>Zoom</option><option>In person</option><option>Google Meet</option></select></label></div><label>Short description<textarea name="event_description" rows={3} placeholder="What should chapters know?" /></label><button className="button outline full" type="submit">Create shared event <Arrow /></button></form></div><div className="admin-panel admin-note-panel"><span className="note-number">OPS / NOTE</span><h2>One source of truth.</h2><p>Every application, chapter contact, weekly report, task, and event can live in your TMMChapters workspace with role-based access.</p><div className="note-line"><span className="gold-rule" /><span>Powered by your Supabase project</span></div></div></div></section>;
-}
+function Empty({ text }: { text: string }) { return <div className="empty-state">{text}</div>; }

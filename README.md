@@ -1,98 +1,58 @@
-# vinext-starter
+# TMM Chapters
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+The chapter operations portal for The Mastery Mentors. This project intentionally contains no marketing site content: it is only for chapter applications, registered chapter work, and administration.
 
-## Prerequisites
+## What it does
 
-- Node.js `>=22.13.0`
+- Accepts chapter applications
+- Gives every approved chapter a unique code instead of an email login
+- Lets chapters file weekly reports and complete assigned tasks
+- Shows chapters shared or chapter-specific events
+- Lets admins approve or reject applications
+- Lets admins manually create chapters and generate or reset codes
+- Gives admins chapter contacts, report history, task completion, and event controls
+- Supports light and dark modes
 
-## Quick Start
+## Security model
+
+Raw chapter codes and session tokens are never stored. The `chapter-portal` Supabase Edge Function hashes both with SHA-256, rate-limits code attempts, and issues opaque 30-day sessions. Operational data stays behind RLS and the browser never receives a secret/service-role key.
+
+Admins use Supabase email/password Auth and must have `app_metadata.role = 'admin'`. Chapter users do not need Supabase Auth accounts.
+
+## Local setup
+
+Requires Node.js 22.13 or newer.
 
 ```bash
 npm install
+cp .env.example .env.local
 npm run dev
-npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+Set these browser-safe values in `.env.local`:
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```text
+NEXT_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-publishable-key
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+Never place a Supabase secret or service-role key in a `NEXT_PUBLIC_*` variable.
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+## Supabase
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+The project uses these database files in order:
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+1. `db/tmm_chapters.sql`
+2. `db/tmm_chapters_code_access.sql`
+3. `db/tmm_chapters_security_hardening.sql`
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
+The Edge Function source is `supabase/functions/chapter-portal/index.ts`. It is deployed with JWT verification disabled at the gateway because the function implements its own chapter-session authentication and separately validates admin JWTs inside the function.
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
+To bootstrap the first admin, create the email/password user in Supabase Authentication, then set that trusted user's server-controlled `app_metadata.role` to `admin`. Sign out and back in afterward to refresh the JWT.
 
-## Useful Commands
+## Verification
 
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+```bash
+npm run lint
+npm test
+```

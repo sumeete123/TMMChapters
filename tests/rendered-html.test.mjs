@@ -20,28 +20,31 @@ test("server-renders the chapter operations homepage", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Chapter Operations \| The Mastery Mentors<\/title>/i);
-  assert.match(html, /Build a chapter\.<br\/>/i);
-  assert.match(html, /Registered chapter sign in/i);
-  assert.match(html, /Start a chapter/i);
-  assert.match(html, /Director console/i);
+  assert.match(html, /<title>TMM Chapters<\/title>/i);
+  assert.match(html, /Enter your chapter code/i);
+  assert.match(html, /Apply to start a chapter/i);
+  assert.match(html, /Admin/i);
+  assert.doesNotMatch(html, /chapters worldwide|students served|our impact|donate/i);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
 test("keeps the finished site free of starter-only infrastructure", async () => {
-  const [page, layout, css, packageJson] = await Promise.all([
+  const [page, layout, css, edgeFunction, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/functions/chapter-portal/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /chapter_applications/);
-  assert.match(page, /weekly_reports/);
-  assert.match(page, /assigned_chapter_id/);
-  assert.match(layout, /Chapter Operations \| The Mastery Mentors/);
-  assert.match(css, /--bg:#0d1521/);
-  assert.match(css, /Cormorant Garamond/);
+  assert.match(page, /chapter-login/);
+  assert.match(edgeFunction, /weekly_reports/);
+  assert.match(edgeFunction, /access_code_hash/);
+  assert.match(layout, /TMM Chapters/);
+  assert.match(css, /data-theme="dark"/);
+  assert.match(css, /Manrope/);
+  assert.doesNotMatch(css, /Cormorant Garamond/);
   assert.match(packageJson, /@supabase\/supabase-js/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
