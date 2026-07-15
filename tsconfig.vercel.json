@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "node_modules",
+    "db",
+    "drizzle",
+    "examples",
+    "worker",
+    "build",
+    "supabase/functions",
+    "vite.config.ts",
+    "drizzle.config.ts"
+  ]
+}

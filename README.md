@@ -59,6 +59,8 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_KfrtGRu3NtZe1Rr0_Q7-qw_wwKiv
 
 Optionally add `NEXT_PUBLIC_TURNSTILE_SITE_KEY` after Turnstile is configured in Supabase. Never add a Supabase secret or service-role key to Vercel.
 
+The included `vercel.json` uses the dedicated `npm run build:vercel` Next.js build. The normal `npm run build` command remains the Sites/Cloudflare build.
+
 ## Verification
 
 ```bash
