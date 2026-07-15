@@ -283,7 +283,10 @@ export default function Page() {
     try {
       await ensureAnonymousSession(captchaToken || undefined);
       const form = new FormData(event.currentTarget);
-      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-login", { code: String(form.get("code") ?? "").trim() });
+      const { data: verified, error } = await supabase!.rpc("verify_chapter_code", { input_code: String(form.get("code") ?? "").trim() });
+      if (error) throw error;
+      if (verified !== true) throw new Error("That access code is not valid.");
+      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-dashboard");
       setDashboard(result.dashboard);
       goTo("chapter");
     } catch (error) {
