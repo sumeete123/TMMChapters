@@ -280,9 +280,9 @@ export default function Page() {
   const chapterLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setBusy(true);
+    const form = new FormData(event.currentTarget);
     try {
       await ensureAnonymousSession(captchaToken || undefined);
-      const form = new FormData(event.currentTarget);
       const { data: verified, error } = await supabase!.rpc("verify_chapter_code", { input_code: String(form.get("code") ?? "").trim() });
       if (error) throw error;
       if (verified !== true) throw new Error("That access code is not valid.");
