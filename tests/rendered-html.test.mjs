@@ -42,13 +42,17 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /signInAnonymously/);
   assert.match(page, /verify_admin_code/);
   assert.match(page, /is_admin/);
+  assert.match(page, /Weekly reports are due every Sunday/);
+  assert.match(page, /Notifications/);
+  assert.match(page, /Chapter command center/);
   assert.match(edgeFunction, /weekly_reports/);
   assert.match(edgeFunction, /provision_chapter_code/);
   assert.match(edgeFunction, /current_chapter_id/);
   assert.doesNotMatch(page, /signInWithPassword|tmm-chapter-session/);
   assert.match(layout, /TMM Chapters/);
   assert.match(css, /data-theme="dark"/);
-  assert.match(css, /Manrope/);
+  assert.match(css, /DM Sans/);
+  assert.match(css, /Space Grotesk/);
   assert.doesNotMatch(css, /Cormorant Garamond/);
   assert.match(packageJson, /@supabase\/supabase-js/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
