@@ -5,7 +5,7 @@ import { supabase } from "../lib/supabase";
 
 type View = "access" | "apply" | "chapter" | "admin";
 type Theme = "light" | "dark";
-type AdminTab = "applications" | "chapters" | "work";
+type AdminTab = "applications" | "reviews" | "chapters" | "work";
 type AuthState = "loading" | "ready" | "error";
 
 type Chapter = {
@@ -53,7 +53,23 @@ type Report = {
   completed_weekly_tasks: boolean;
   highlights?: string | null;
   blockers?: string | null;
+  next_week_plan?: string | null;
+  support_needed?: string | null;
   submitted_at: string;
+  review_status?: "pending" | "reviewed" | "needs_follow_up";
+  public_feedback?: string | null;
+  reviewed_at?: string | null;
+};
+
+type ReportReview = {
+  report_id: string;
+  status: "pending" | "reviewed" | "needs_follow_up";
+  rating?: number | null;
+  private_notes?: string | null;
+  public_feedback?: string | null;
+  reviewed_at?: string | null;
+  reviewed_by?: string | null;
+  updated_at: string;
 };
 
 type Application = {
@@ -70,10 +86,10 @@ type Application = {
 };
 
 type ChapterDashboardData = { chapter: Chapter; tasks: Task[]; events: ChapterEvent[]; reports: Report[] };
-type AdminData = { applications: Application[]; chapters: Chapter[]; reports: Report[]; tasks: Task[]; events: ChapterEvent[] };
+type AdminData = { applications: Application[]; chapters: Chapter[]; reports: Report[]; reviews: ReportReview[]; tasks: Task[]; events: ChapterEvent[] };
 type AdminActionResult = Partial<AdminData> & { code?: string; chapter?: Chapter; overview?: AdminData };
 
-const emptyAdmin: AdminData = { applications: [], chapters: [], reports: [], tasks: [], events: [] };
+const emptyAdmin: AdminData = { applications: [], chapters: [], reports: [], reviews: [], tasks: [], events: [] };
 const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? "";
 
 declare global {
@@ -119,6 +135,18 @@ function thisMonday() {
   const day = date.getDay();
   date.setDate(date.getDate() - (day === 0 ? 6 : day - 1));
   return date.toISOString().slice(0, 10);
+}
+
+function weekDueDate(weekStart = thisMonday()) {
+  const date = new Date(`${weekStart}T12:00:00`);
+  date.setDate(date.getDate() + 6);
+  return date;
+}
+
+function reviewLabel(status?: string) {
+  if (status === "reviewed") return "Reviewed";
+  if (status === "needs_follow_up") return "Follow-up needed";
+  return "Awaiting review";
 }
 
 async function invokePortal<T>(action: string, payload: Record<string, unknown> = {}) {
@@ -335,6 +363,8 @@ export default function Page() {
         completed_weekly_tasks: form.get("completed_weekly_tasks") === "on",
         highlights: String(form.get("highlights") ?? ""),
         blockers: String(form.get("blockers") ?? ""),
+        next_week_plan: String(form.get("next_week_plan") ?? ""),
+        support_needed: String(form.get("support_needed") ?? ""),
       };
       const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-submit-report", { report });
       setDashboard(result.dashboard);
@@ -453,40 +483,68 @@ function ApplicationView({ onSubmit, busy }: { onSubmit: (event: FormEvent<HTMLF
 
 function ChapterView({ data, onReport, onToggleTask, onLogout, busy }: { data: ChapterDashboardData; onReport: (event: FormEvent<HTMLFormElement>) => void; onToggleTask: (task: Task) => void; onLogout: () => void; busy: boolean }) {
   const latest = data.reports[0];
+  const current = data.reports.find((report) => report.week_start === thisMonday());
+  const due = weekDueDate();
+  const openTasks = data.tasks.filter((task) => task.status !== "complete").length;
   return <section className="workspace">
     <aside className="sidebar">
       <div><span className="tiny-label">Current chapter</span><h2>{data.chapter.name}</h2><p>{data.chapter.location}</p></div>
-      <nav><a href="#weekly">Weekly update</a><a href="#tasks">Tasks</a><a href="#events">Events</a><a href="#history">History</a></nav>
+      <nav><a href="#weekly">Weekly report</a><a href="#tasks">Tasks</a><a href="#events">Events</a><a href="#history">History</a></nav>
       <button className="sidebar-action" onClick={onLogout}>Sign out chapter</button>
     </aside>
     <div className="workspace-content">
       <div className="workspace-heading"><div><span className="tiny-label">Chapter dashboard</span><h1>{data.chapter.name}</h1></div><Status value={data.chapter.status} /></div>
+      <div className="metric-strip">
+        <div><span>This week</span><strong>{current ? "Submitted" : "Not submitted"}</strong><small>Due {due.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</small></div>
+        <div><span>Review</span><strong>{current ? reviewLabel(current.review_status) : "—"}</strong><small>Ratings stay private</small></div>
+        <div><span>Open tasks</span><strong>{openTasks}</strong><small>{data.tasks.length - openTasks} completed</small></div>
+      </div>
+      {current?.public_feedback && <div className="feedback-callout"><span className="tiny-label">Feedback from TMM</span><strong>{current.review_status === "needs_follow_up" ? "Follow-up requested" : "Your report was reviewed"}</strong><p>{current.public_feedback}</p></div>}
       <section className="work-section weekly-section" id="weekly">
-        <div className="section-title"><div><h2>Weekly update</h2><p>One report per week. Submitting again updates the same week.</p></div>{latest && <span className="last-saved">Last saved {new Date(latest.submitted_at).toLocaleDateString()}</span>}</div>
+        <div className="section-title"><div><h2>Weekly report</h2><p>Tell us what happened, what is next, and where you need support.</p></div><div className="review-meta">{current && <span className={`review-pill ${current.review_status ?? "pending"}`}>{reviewLabel(current.review_status)}</span>}{latest && <span className="last-saved">Last saved {new Date(latest.submitted_at).toLocaleDateString()}</span>}</div></div>
         <form className="weekly-form" onSubmit={onReport}>
           <div className="form-grid four">
             <Field label="Week starting"><input type="date" name="week_start" defaultValue={thisMonday()} required /></Field>
-            <Field label="Sessions held"><input type="number" min="0" name="sessions_held" defaultValue={latest?.week_start === thisMonday() ? latest.sessions_held : 0} required /></Field>
-            <Field label="Students served"><input type="number" min="0" name="students_served" defaultValue={latest?.week_start === thisMonday() ? latest.students_served : 0} required /></Field>
-            <Field label="Mentors present"><input type="number" min="0" name="mentors_present" defaultValue={latest?.week_start === thisMonday() ? latest.mentors_present : 0} required /></Field>
+            <Field label="Sessions held"><input type="number" min="0" name="sessions_held" defaultValue={current?.sessions_held ?? 0} required /></Field>
+            <Field label="Students served"><input type="number" min="0" name="students_served" defaultValue={current?.students_served ?? 0} required /></Field>
+            <Field label="Mentors present"><input type="number" min="0" name="mentors_present" defaultValue={current?.mentors_present ?? 0} required /></Field>
           </div>
-          <label className="check-row"><input type="checkbox" name="completed_weekly_tasks" defaultChecked={latest?.week_start === thisMonday() ? latest.completed_weekly_tasks : false} /><span>We completed the required weekly tasks.</span></label>
-          <div className="form-grid"><Field label="What did you do this week?"><textarea name="highlights" rows={4} defaultValue={latest?.week_start === thisMonday() ? latest.highlights ?? "" : ""} placeholder="Sessions, outreach, curriculum work…" /></Field><Field label="Do you need help with anything?"><textarea name="blockers" rows={4} defaultValue={latest?.week_start === thisMonday() ? latest.blockers ?? "" : ""} placeholder="Optional" /></Field></div>
-          <div className="align-right"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save weekly update"}</Button></div>
+          <label className="check-row"><input type="checkbox" name="completed_weekly_tasks" defaultChecked={current?.completed_weekly_tasks ?? false} /><span>We completed the required weekly tasks.</span></label>
+          <div className="form-grid">
+            <Field label="What did your chapter accomplish?"><textarea name="highlights" rows={4} defaultValue={current?.highlights ?? ""} placeholder="Sessions, outreach, curriculum work, wins…" required /></Field>
+            <Field label="What challenges came up?"><textarea name="blockers" rows={4} defaultValue={current?.blockers ?? ""} placeholder="Attendance, scheduling, materials…" /></Field>
+            <Field label="What is planned for next week?"><textarea name="next_week_plan" rows={4} defaultValue={current?.next_week_plan ?? ""} placeholder="Goals, sessions, outreach, deadlines…" required /></Field>
+            <Field label="What support do you need from TMM?"><textarea name="support_needed" rows={4} defaultValue={current?.support_needed ?? ""} placeholder="Optional — resources, advice, introductions…" /></Field>
+          </div>
+          <div className="form-footer"><p>Submitting again replaces this week’s report and sends it back for review.</p><Button type="submit" disabled={busy}>{busy ? "Submitting…" : current ? "Update weekly report" : "Submit weekly report"}</Button></div>
         </form>
       </section>
       <div className="content-grid">
         <section className="work-section" id="tasks"><div className="section-title"><div><h2>Assigned tasks</h2><p>Check tasks off when they’re complete.</p></div></div><div className="item-list">{data.tasks.length ? data.tasks.map((task) => <button className={`task-item ${task.status === "complete" ? "complete" : ""}`} onClick={() => onToggleTask(task)} key={task.id} disabled={busy}><span className="check-box">{task.status === "complete" ? "✓" : ""}</span><span><strong>{task.title}</strong><small>{task.due_date ? `Due ${new Date(`${task.due_date}T12:00:00`).toLocaleDateString()}` : "No due date"}{task.priority === "high" ? " · High priority" : ""}</small></span></button>) : <Empty text="No assigned tasks." />}</div></section>
         <section className="work-section" id="events"><div className="section-title"><div><h2>Upcoming events</h2><p>Shared and chapter-specific events.</p></div></div><div className="item-list">{data.events.length ? data.events.map((event) => <div className="event-item" key={event.id}><time>{new Date(event.starts_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time><span><strong>{event.title}</strong><small>{new Date(event.starts_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}{event.location ? ` · ${event.location}` : ""}</small></span></div>) : <Empty text="No upcoming events." />}</div></section>
       </div>
-      <section className="work-section" id="history"><div className="section-title"><div><h2>Report history</h2><p>Your most recent weekly submissions.</p></div></div>{data.reports.length ? <div className="simple-table"><div className="table-head"><span>Week</span><span>Sessions</span><span>Students</span><span>Tasks done</span></div>{data.reports.map((report) => <div className="table-row" key={report.id}><span>{new Date(`${report.week_start}T12:00:00`).toLocaleDateString()}</span><span>{report.sessions_held}</span><span>{report.students_served}</span><span>{report.completed_weekly_tasks ? "Yes" : "No"}</span></div>)}</div> : <Empty text="No weekly reports yet." />}</section>
+      <section className="work-section" id="history"><div className="section-title"><div><h2>Report history</h2><p>Submission and review status for your recent reports. Private ratings are not shown.</p></div></div>{data.reports.length ? <div className="simple-table five"><div className="table-head"><span>Week</span><span>Sessions</span><span>Students</span><span>Tasks done</span><span>Status</span></div>{data.reports.map((report) => <div className="table-row" key={report.id}><span>{new Date(`${report.week_start}T12:00:00`).toLocaleDateString()}</span><span>{report.sessions_held}</span><span>{report.students_served}</span><span>{report.completed_weekly_tasks ? "Yes" : "No"}</span><span>{reviewLabel(report.review_status)}</span></div>)}</div> : <Empty text="No weekly reports yet." />}</section>
     </div>
   </section>;
 }
 
 function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issuedCode, setIssuedCode, onCaptcha, busy }: { data: AdminData; ready: boolean; tab: AdminTab; setTab: (tab: AdminTab) => void; onLogin: (event: FormEvent<HTMLFormElement>) => void; onAction: (action: string, payload: Record<string, unknown>, codeName?: string) => Promise<void>; onLogout: () => void; issuedCode: { name: string; code: string } | null; setIssuedCode: (value: { name: string; code: string } | null) => void; onCaptcha: (token: string) => void; busy: boolean }) {
   const pending = data.applications.filter((application) => application.status === "new" || application.status === "reviewing").length;
-  const latestReport = useMemo(() => new Map(data.reports.map((report) => [report.chapter_id, report])), [data.reports]);
+  const latestReport = useMemo(() => {
+    const result = new Map<string | undefined, Report>();
+    data.reports.forEach((report) => { if (!result.has(report.chapter_id)) result.set(report.chapter_id, report); });
+    return result;
+  }, [data.reports]);
+  const reviewByReport = useMemo(() => new Map(data.reviews.map((review) => [review.report_id, review])), [data.reviews]);
+  const reviewQueue = data.reports.filter((report) => (reviewByReport.get(report.id)?.status ?? "pending") === "pending");
+  const followUps = data.reviews.filter((review) => review.status === "needs_follow_up").length;
+  const currentWeekReportChapters = new Set(data.reports.filter((report) => report.week_start === thisMonday()).map((report) => report.chapter_id));
+  const missingReports = data.chapters.filter((chapter) => chapter.status === "active" && !currentWeekReportChapters.has(chapter.id));
+  const orderedReports = [...data.reports].sort((a, b) => {
+    const aPending = (reviewByReport.get(a.id)?.status ?? "pending") === "pending" ? 0 : 1;
+    const bPending = (reviewByReport.get(b.id)?.status ?? "pending") === "pending" ? 0 : 1;
+    return aPending - bPending || b.week_start.localeCompare(a.week_start);
+  });
   if (!ready) return <section className="access-shell"><div className="access-card"><div className="card-heading"><span className="tiny-label">Admin access</span><h1>Enter admin code</h1><p>Use the secure 6-digit administrator access code.</p></div><form className="stack-form" onSubmit={onLogin}><Field label="6-digit admin code"><input className="code-input" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" minLength={6} maxLength={6} placeholder="••••••" required /></Field>{turnstileSiteKey && <TurnstileChallenge onToken={onCaptcha} />}<Button type="submit" disabled={busy}>{busy ? "Checking…" : "Open admin dashboard"}</Button></form></div></section>;
 
   const submitChapter = (event: FormEvent<HTMLFormElement>) => {
@@ -505,20 +563,90 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
     void onAction("admin-create-event", { event: Object.fromEntries(new FormData(event.currentTarget)) });
     event.currentTarget.reset();
   };
+  const exportReviews = () => {
+    const quote = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+    const header = ["Chapter", "Week", "Submitted", "Sessions", "Students", "Mentors", "Tasks complete", "Review status", "Private rating", "Private notes", "Public feedback"];
+    const rows = data.reports.map((report) => {
+      const chapter = data.chapters.find((item) => item.id === report.chapter_id);
+      const review = reviewByReport.get(report.id);
+      return [chapter?.name, report.week_start, report.submitted_at, report.sessions_held, report.students_served, report.mentors_present, report.completed_weekly_tasks ? "Yes" : "No", review?.status ?? "pending", review?.rating ?? "", review?.private_notes ?? "", review?.public_feedback ?? ""];
+    });
+    const blob = new Blob([[header, ...rows].map((row) => row.map(quote).join(",")).join("\n")], { type: "text/csv;charset=utf-8" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `tmm-weekly-reviews-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
 
   return <section className="admin-layout">
-    <aside className="admin-sidebar"><div><span className="tiny-label">Administration</span><h2>Chapter operations</h2></div><nav><button className={tab === "applications" ? "active" : ""} onClick={() => setTab("applications")}>Applications {pending > 0 && <b>{pending}</b>}</button><button className={tab === "chapters" ? "active" : ""} onClick={() => setTab("chapters")}>Chapters</button><button className={tab === "work" ? "active" : ""} onClick={() => setTab("work")}>Tasks & events</button></nav><button className="sidebar-action" onClick={onLogout}>Sign out admin</button></aside>
+    <aside className="admin-sidebar"><div><span className="tiny-label">Administration</span><h2>Chapter operations</h2></div><nav><button className={tab === "applications" ? "active" : ""} onClick={() => setTab("applications")}>Applications {pending > 0 && <b>{pending}</b>}</button><button className={tab === "reviews" ? "active" : ""} onClick={() => setTab("reviews")}>Weekly reviews {reviewQueue.length > 0 && <b>{reviewQueue.length}</b>}</button><button className={tab === "chapters" ? "active" : ""} onClick={() => setTab("chapters")}>Chapters</button><button className={tab === "work" ? "active" : ""} onClick={() => setTab("work")}>Tasks & events</button></nav><button className="sidebar-action" onClick={onLogout}>Sign out admin</button></aside>
     <div className="admin-content">
-      <div className="workspace-heading"><div><span className="tiny-label">Admin dashboard</span><h1>{tab === "applications" ? "Applications" : tab === "chapters" ? "Chapters" : "Tasks & events"}</h1></div></div>
+      <div className="workspace-heading"><div><span className="tiny-label">Admin dashboard</span><h1>{tab === "applications" ? "Applications" : tab === "reviews" ? "Weekly reviews" : tab === "chapters" ? "Chapters" : "Tasks & events"}</h1></div></div>
       {issuedCode && <div className="code-result"><div><span className="tiny-label">New chapter code · shown once</span><strong>{issuedCode.name}</strong><code>{issuedCode.code}</code></div><div><Button kind="secondary" onClick={() => navigator.clipboard.writeText(issuedCode.code)}>Copy code</Button><Button kind="quiet" onClick={() => setIssuedCode(null)}>Dismiss</Button></div></div>}
 
       {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Approve to create the chapter and issue its access code.</p></div></div><div className="application-list">{data.applications.length ? data.applications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>{application.contact_name}</span><a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.why && <p>{application.why}</p>}<div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & create code</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}</div></article>) : <Empty text="No applications yet." />}</div></section>}
+
+      {tab === "reviews" && <>
+        <div className="metric-strip admin-metrics">
+          <div><span>Submitted this week</span><strong>{currentWeekReportChapters.size}</strong><small>of {data.chapters.filter((chapter) => chapter.status === "active").length} active chapters</small></div>
+          <div><span>Awaiting review</span><strong>{reviewQueue.length}</strong><small>Private ratings not yet saved</small></div>
+          <div><span>Follow-up needed</span><strong>{followUps}</strong><small>Flagged by your team</small></div>
+          <div><span>Missing this week</span><strong>{missingReports.length}</strong><small>Reminder-ready</small></div>
+        </div>
+        <section className="admin-section">
+          <div className="section-title"><div><h2>Missing weekly reports</h2><p>Active chapters without a report for the week of {new Date(`${thisMonday()}T12:00:00`).toLocaleDateString()}.</p></div></div>
+          {missingReports.length ? <div className="missing-list">{missingReports.map((chapter) => <div key={chapter.id}><span><strong>{chapter.name}</strong><small>{chapter.contact_name} · {chapter.contact_email}</small></span><a className="button secondary" href={`mailto:${chapter.contact_email}?subject=${encodeURIComponent("TMM weekly report reminder")}&body=${encodeURIComponent(`Hi ${chapter.contact_name},\n\nYour TMM chapter weekly report for the week of ${new Date(`${thisMonday()}T12:00:00`).toLocaleDateString()} is still due. Please sign in to the chapter portal and submit it by ${weekDueDate().toLocaleDateString()}.\n\nThank you!`)}`}>Email reminder</a></div>)}</div> : <Empty text="Every active chapter has submitted this week." />}
+        </section>
+        <section className="admin-section">
+          <div className="section-title"><div><h2>Review queue</h2><p>Ratings and internal notes are visible only to administrators. Public feedback is shown to the matching chapter.</p></div><Button kind="secondary" onClick={exportReviews}>Export CSV</Button></div>
+          <div className="review-list">{orderedReports.length ? orderedReports.map((report) => <ReviewCard key={report.id} report={report} review={reviewByReport.get(report.id)} chapter={data.chapters.find((chapter) => chapter.id === report.chapter_id)} onAction={onAction} busy={busy} />) : <Empty text="No weekly reports have been submitted yet." />}</div>
+        </section>
+      </>}
 
       {tab === "chapters" && <><section className="admin-section"><div className="section-title"><div><h2>Add a chapter manually</h2><p>Leave the code blank to generate one automatically.</p></div></div><form className="surface-form compact" onSubmit={submitChapter}><div className="form-grid three"><Field label="Chapter name"><input name="name" required /></Field><Field label="City and state"><input name="location" required /></Field><Field label="Lead name"><input name="contact_name" required /></Field><Field label="Lead email"><input name="contact_email" type="email" required /></Field><Field label="Lead phone"><input name="contact_phone" type="tel" /></Field><Field label="Custom 6-digit code" hint="Optional · exactly 6 digits"><input name="code" className="code-input small" inputMode="numeric" pattern="[0-9]{6}" minLength={6} maxLength={6} /></Field><Field label="Advisor name"><input name="advisor_name" /></Field><Field label="Advisor email"><input name="advisor_email" type="email" /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>Add chapter</Button></div></form></section><section className="admin-section"><div className="section-title"><div><h2>Chapter directory</h2><p>Contacts, reporting status, and code management.</p></div></div>{data.chapters.length ? <div className="chapter-list">{data.chapters.map((chapter) => { const report = latestReport.get(chapter.id); return <article className="chapter-row" key={chapter.id}><div><strong>{chapter.name}</strong><span>{chapter.location}</span></div><div><span>{chapter.contact_name}</span><a href={`mailto:${chapter.contact_email}`}>{chapter.contact_email}</a>{chapter.contact_phone && <span>{chapter.contact_phone}</span>}</div><div><span>Latest report</span><strong className="plain-strong">{report ? new Date(`${report.week_start}T12:00:00`).toLocaleDateString() : "Not submitted"}</strong></div><div className="chapter-row-end"><Status value={chapter.status} /><span className="code-hint">Code ends •{chapter.access_code_hint ?? "—"}</span><Button kind="secondary" disabled={busy} onClick={() => onAction("admin-reset-code", { chapter_id: chapter.id }, chapter.name)}>Reset code</Button></div></article>; })}</div> : <Empty text="No chapters have been added." />}</section></>}
 
       {tab === "work" && <div className="admin-two-column"><section className="admin-section"><div className="section-title"><div><h2>Assign a task</h2><p>Tasks appear immediately in the selected chapter dashboard.</p></div></div><form className="surface-form compact" onSubmit={submitTask}><Field label="Task"><input name="title" required /></Field><Field label="Chapter"><select name="chapter_id" required defaultValue=""><option value="" disabled>Select a chapter</option>{data.chapters.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.name}</option>)}</select></Field><div className="form-grid"><Field label="Due date"><input name="due_date" type="date" /></Field><Field label="Priority"><select name="priority" defaultValue="normal"><option value="normal">Normal</option><option value="high">High</option></select></Field></div><Field label="Details"><textarea name="description" rows={3} /></Field><Button type="submit" disabled={busy}>Assign task</Button></form><div className="admin-item-list">{data.tasks.slice(0, 12).map((task) => <div key={task.id}><span><strong>{task.title}</strong><small>{data.chapters.find((chapter) => chapter.id === task.assigned_chapter_id)?.name ?? "Chapter"}</small></span><Status value={task.status} /></div>)}</div></section><section className="admin-section"><div className="section-title"><div><h2>Create an event</h2><p>Leave chapter blank to share with every chapter.</p></div></div><form className="surface-form compact" onSubmit={submitEvent}><Field label="Event"><input name="title" required /></Field><Field label="Chapter"><select name="chapter_id" defaultValue=""><option value="">All chapters</option>{data.chapters.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.name}</option>)}</select></Field><div className="form-grid"><Field label="Starts"><input name="starts_at" type="datetime-local" required /></Field><Field label="Ends"><input name="ends_at" type="datetime-local" /></Field></div><Field label="Location"><input name="location" /></Field><Field label="Link"><input name="link" type="url" /></Field><Field label="Details"><textarea name="description" rows={3} /></Field><Button type="submit" disabled={busy}>Create event</Button></form><div className="admin-item-list">{data.events.slice(0, 12).map((event) => <div key={event.id}><span><strong>{event.title}</strong><small>{new Date(event.starts_at).toLocaleString()}</small></span>{event.chapter_id ? <Status value="chapter" /> : <Status value="all chapters" />}</div>)}</div></section></div>}
     </div>
   </section>;
+}
+
+function ReviewCard({ report, review, chapter, onAction, busy }: { report: Report; review?: ReportReview; chapter?: Chapter; onAction: (action: string, payload: Record<string, unknown>) => Promise<void>; busy: boolean }) {
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    void onAction("admin-review-report", {
+      review: {
+        report_id: report.id,
+        rating: Number(form.get("rating")),
+        status: String(form.get("status") ?? "reviewed"),
+        private_notes: String(form.get("private_notes") ?? ""),
+        public_feedback: String(form.get("public_feedback") ?? ""),
+      },
+    });
+  };
+  return <article className={`review-card ${review?.status ?? "pending"}`}>
+    <div className="review-card-heading">
+      <div><span className="tiny-label">Week of {new Date(`${report.week_start}T12:00:00`).toLocaleDateString()}</span><h3>{chapter?.name ?? "Chapter"}</h3><p>Submitted {new Date(report.submitted_at).toLocaleString()}</p></div>
+      <span className={`review-pill ${review?.status ?? "pending"}`}>{reviewLabel(review?.status)}</span>
+    </div>
+    <div className="report-stats"><span><strong>{report.sessions_held}</strong> sessions</span><span><strong>{report.students_served}</strong> students</span><span><strong>{report.mentors_present}</strong> mentors</span><span><strong>{report.completed_weekly_tasks ? "Yes" : "No"}</strong> tasks done</span></div>
+    <div className="report-narrative">
+      <div><span>Accomplishments</span><p>{report.highlights || "Nothing entered."}</p></div>
+      <div><span>Challenges</span><p>{report.blockers || "Nothing entered."}</p></div>
+      <div><span>Next week</span><p>{report.next_week_plan || "Nothing entered."}</p></div>
+      <div><span>Support requested</span><p>{report.support_needed || "Nothing entered."}</p></div>
+    </div>
+    <form className="review-form" onSubmit={submit}>
+      <div className="form-grid">
+        <Field label="Private rating" hint="1 = needs major support · 5 = excellent"><select name="rating" defaultValue={String(review?.rating ?? "")} required><option value="" disabled>Select 1–5</option><option value="1">1 — Needs major support</option><option value="2">2 — Below expectations</option><option value="3">3 — Meeting expectations</option><option value="4">4 — Strong</option><option value="5">5 — Excellent</option></select></Field>
+        <Field label="Review outcome"><select name="status" defaultValue={review?.status === "needs_follow_up" ? "needs_follow_up" : "reviewed"}><option value="reviewed">Reviewed</option><option value="needs_follow_up">Needs follow-up</option></select></Field>
+        <Field label="Private admin notes" hint="Never shown to the chapter"><textarea name="private_notes" rows={4} defaultValue={review?.private_notes ?? ""} placeholder="Internal observations, concerns, coaching notes…" /></Field>
+        <Field label="Feedback for the chapter" hint="Shown in their dashboard"><textarea name="public_feedback" rows={4} defaultValue={review?.public_feedback ?? ""} placeholder="Optional encouragement or next steps…" /></Field>
+      </div>
+      <div className="form-footer"><p>{review?.reviewed_at ? `Last reviewed ${new Date(review.reviewed_at).toLocaleString()}` : "This report has not been rated yet."}</p><Button type="submit" disabled={busy}>{busy ? "Saving…" : review?.reviewed_at ? "Update review" : "Save private review"}</Button></div>
+    </form>
+  </article>;
 }
 
 function Empty({ text }: { text: string }) { return <div className="empty-state">{text}</div>; }

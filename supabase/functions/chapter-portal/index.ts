@@ -65,24 +65,44 @@ async function getChapterDashboard(chapterId: string) {
     admin.from("chapters").select("id, name, location, contact_name, contact_email, status").eq("id", chapterId).single(),
     admin.from("tasks").select("id, title, description, due_date, priority, status, completed_at").eq("assigned_chapter_id", chapterId).neq("status", "archived").order("due_date", { ascending: true, nullsFirst: false }),
     admin.from("events").select("id, title, description, starts_at, ends_at, location, link, chapter_id").or(`chapter_id.is.null,chapter_id.eq.${chapterId}`).gte("starts_at", now).order("starts_at", { ascending: true }).limit(10),
-    admin.from("weekly_reports").select("id, week_start, sessions_held, students_served, mentors_present, completed_weekly_tasks, highlights, blockers, submitted_at").eq("chapter_id", chapterId).order("week_start", { ascending: false }).limit(8),
+    admin.from("weekly_reports").select("id, week_start, sessions_held, students_served, mentors_present, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").eq("chapter_id", chapterId).order("week_start", { ascending: false }).limit(8),
   ]);
   const firstError = [chapterResult.error, tasksResult.error, eventsResult.error, reportsResult.error].find(Boolean);
   if (firstError) throw firstError;
-  return { chapter: chapterResult.data, tasks: tasksResult.data ?? [], events: eventsResult.data ?? [], reports: reportsResult.data ?? [] };
+  const reports = reportsResult.data ?? [];
+  let safeReviews: Array<{ report_id: string; status: string; public_feedback: string | null; reviewed_at: string | null }> = [];
+  if (reports.length) {
+    const { data, error } = await admin.from("weekly_report_reviews")
+      .select("report_id, status, public_feedback, reviewed_at")
+      .in("report_id", reports.map((report) => report.id));
+    if (error) throw error;
+    safeReviews = data ?? [];
+  }
+  const reviewByReport = new Map(safeReviews.map((review) => [review.report_id, review]));
+  const chapterReports = reports.map((report) => {
+    const review = reviewByReport.get(report.id);
+    return {
+      ...report,
+      review_status: review?.status ?? "pending",
+      public_feedback: review?.public_feedback ?? null,
+      reviewed_at: review?.reviewed_at ?? null,
+    };
+  });
+  return { chapter: chapterResult.data, tasks: tasksResult.data ?? [], events: eventsResult.data ?? [], reports: chapterReports };
 }
 
 async function adminOverview() {
-  const [applications, chapters, reports, tasks, events] = await Promise.all([
+  const [applications, chapters, reports, reviews, tasks, events] = await Promise.all([
     admin.from("chapter_applications").select("id, contact_name, contact_email, contact_phone, organization_name, location, student_reach, why, status, internal_notes, created_at").order("created_at", { ascending: false }),
     admin.from("chapters").select("id, name, slug, location, contact_name, contact_email, contact_phone, advisor_name, advisor_email, status, access_code_hint, created_at").order("name"),
-    admin.from("weekly_reports").select("id, chapter_id, week_start, sessions_held, students_served, mentors_present, completed_weekly_tasks, submitted_at").order("week_start", { ascending: false }).limit(200),
+    admin.from("weekly_reports").select("id, chapter_id, week_start, sessions_held, students_served, mentors_present, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").order("week_start", { ascending: false }).limit(200),
+    admin.from("weekly_report_reviews").select("report_id, status, rating, private_notes, public_feedback, reviewed_at, reviewed_by, updated_at").order("updated_at", { ascending: false }).limit(200),
     admin.from("tasks").select("id, title, description, assigned_chapter_id, due_date, priority, status, completed_at, created_at").order("created_at", { ascending: false }).limit(200),
     admin.from("events").select("id, title, description, starts_at, ends_at, location, link, chapter_id, created_at").order("starts_at", { ascending: true }).limit(100),
   ]);
-  const firstError = [applications.error, chapters.error, reports.error, tasks.error, events.error].find(Boolean);
+  const firstError = [applications.error, chapters.error, reports.error, reviews.error, tasks.error, events.error].find(Boolean);
   if (firstError) throw firstError;
-  return { applications: applications.data ?? [], chapters: chapters.data ?? [], reports: reports.data ?? [], tasks: tasks.data ?? [], events: events.data ?? [] };
+  return { applications: applications.data ?? [], chapters: chapters.data ?? [], reports: reports.data ?? [], reviews: reviews.data ?? [], tasks: tasks.data ?? [], events: events.data ?? [] };
 }
 
 async function provisionUniqueChapterCode(chapterId: string, requestedCode?: unknown) {
@@ -141,11 +161,27 @@ Deno.serve(async (req: Request) => {
         completed_weekly_tasks: Boolean(report.completed_weekly_tasks),
         highlights: String(report.highlights ?? "").slice(0, 4000),
         blockers: String(report.blockers ?? "").slice(0, 4000),
+        next_week_plan: String(report.next_week_plan ?? "").slice(0, 4000),
+        support_needed: String(report.support_needed ?? "").slice(0, 4000),
         submitted_by: auth.user.id,
         submitted_at: new Date().toISOString(),
       };
-      const { error } = await admin.from("weekly_reports").upsert(payload, { onConflict: "chapter_id,week_start" });
+      const { data: savedReport, error } = await admin.from("weekly_reports")
+        .upsert(payload, { onConflict: "chapter_id,week_start" })
+        .select("id")
+        .single();
       if (error) throw error;
+      const { error: reviewResetError } = await admin.from("weekly_report_reviews").upsert({
+        report_id: savedReport.id,
+        status: "pending",
+        rating: null,
+        private_notes: null,
+        public_feedback: null,
+        reviewed_by: null,
+        reviewed_at: null,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "report_id" });
+      if (reviewResetError) throw reviewResetError;
       return json({ dashboard: await getChapterDashboard(chapterId) });
     }
 
@@ -237,6 +273,31 @@ Deno.serve(async (req: Request) => {
       const chapterId = String(body.chapter_id ?? "");
       const code = await provisionUniqueChapterCode(chapterId);
       return json({ code, overview: await adminOverview() });
+    }
+
+    if (action === "admin-review-report") {
+      const review = body.review ?? {};
+      const reportId = String(review.report_id ?? "");
+      const rating = Number(review.rating);
+      const status = String(review.status ?? "reviewed");
+      if (!reportId) return json({ error: "Choose a weekly report to review." }, 400);
+      if (!Number.isInteger(rating) || rating < 1 || rating > 5) return json({ error: "Choose a rating from 1 to 5." }, 400);
+      if (!["reviewed", "needs_follow_up"].includes(status)) return json({ error: "Choose a valid review status." }, 400);
+      const { data: existingReport, error: reportError } = await admin.from("weekly_reports").select("id").eq("id", reportId).maybeSingle();
+      if (reportError) throw reportError;
+      if (!existingReport) return json({ error: "That weekly report could not be found." }, 404);
+      const { error } = await admin.from("weekly_report_reviews").upsert({
+        report_id: reportId,
+        status,
+        rating,
+        private_notes: String(review.private_notes ?? "").trim().slice(0, 4000) || null,
+        public_feedback: String(review.public_feedback ?? "").trim().slice(0, 2000) || null,
+        reviewed_by: auth.user.id,
+        reviewed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "report_id" });
+      if (error) throw error;
+      return json(await adminOverview());
     }
 
     if (action === "admin-assign-task") {
