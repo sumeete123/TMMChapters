@@ -137,7 +137,11 @@ async function ensureAnonymousSession(captchaToken?: string) {
   if (!supabase) throw new Error("The portal is not connected yet.");
   const { data: current, error: currentError } = await supabase.auth.getSession();
   if (currentError) throw currentError;
-  if (current.session) return current.session;
+  if (current.session) {
+    const { data: verified, error: verificationError } = await supabase.auth.getUser();
+    if (!verificationError && verified.user) return current.session;
+    await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
+  }
   if (turnstileSiteKey && !captchaToken) throw new Error("CAPTCHA_REQUIRED");
   const { data, error } = await supabase.auth.signInAnonymously(captchaToken ? { options: { captchaToken } } : undefined);
   if (error) throw error;
