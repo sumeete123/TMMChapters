@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { supabase } from "../lib/supabase";
 
 type View = "access" | "apply" | "chapter" | "admin";
@@ -12,6 +12,7 @@ type Chapter = {
   id: string;
   name: string;
   location: string;
+  chapter_type?: "city" | "school";
   contact_name: string;
   contact_email: string;
   contact_phone?: string | null;
@@ -63,7 +64,7 @@ type Report = {
   week_start: string;
   sessions_held: number;
   students_served: number;
-  mentors_present: number;
+  instructional_hours: number;
   completed_weekly_tasks: boolean;
   highlights?: string | null;
   blockers?: string | null;
@@ -73,6 +74,17 @@ type Report = {
   review_status?: "pending" | "reviewed" | "needs_follow_up";
   public_feedback?: string | null;
   reviewed_at?: string | null;
+};
+
+type NationalImpact = {
+  name: string;
+  students_taught: number;
+  students_taught_is_minimum: boolean;
+  instructional_hours: number;
+  volunteer_count: number;
+  session_count: number;
+  chapter_count: number;
+  as_of_date: string;
 };
 
 type ReportReview = {
@@ -94,17 +106,23 @@ type Application = {
   additional_contacts?: Array<{ full_name: string; email?: string; phone?: string; role?: string }>;
   organization_name: string;
   location: string;
+  chapter_type?: "city" | "school";
+  application_kind?: "new_chapter" | "join_existing";
+  existing_chapter_id?: string | null;
   student_reach?: string | null;
   why?: string | null;
   status: string;
   created_at: string;
 };
 
+type ChapterMatch = Pick<Chapter, "id" | "name" | "location"> & { chapter_type: "city" | "school" };
+
 type ChapterDashboardData = { chapter: Chapter; tasks: Task[]; events: ChapterEvent[]; reports: Report[]; volunteers: Volunteer[] };
-type AdminData = { applications: Application[]; chapters: Chapter[]; reports: Report[]; reviews: ReportReview[]; tasks: Task[]; events: ChapterEvent[]; volunteers: Volunteer[] };
+type AdminData = { applications: Application[]; chapters: Chapter[]; reports: Report[]; reviews: ReportReview[]; tasks: Task[]; events: ChapterEvent[]; volunteers: Volunteer[]; nationalImpact: NationalImpact };
 type AdminActionResult = Partial<AdminData> & { code?: string; chapter?: Chapter; overview?: AdminData };
 
-const emptyAdmin: AdminData = { applications: [], chapters: [], reports: [], reviews: [], tasks: [], events: [], volunteers: [] };
+const foundingImpact: NationalImpact = { name: "TMM National Chapter", students_taught: 65, students_taught_is_minimum: true, instructional_hours: 36, volunteer_count: 19, session_count: 36, chapter_count: 1, as_of_date: "2026-07-15" };
+const emptyAdmin: AdminData = { applications: [], chapters: [], reports: [], reviews: [], tasks: [], events: [], volunteers: [], nationalImpact: foundingImpact };
 const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? "";
 
 declare global {
@@ -274,6 +292,7 @@ export default function Page() {
   const [authMessage, setAuthMessage] = useState(turnstileSiteKey ? "Complete the security check to create a secure access session." : "Creating a secure access session…");
   const [captchaToken, setCaptchaToken] = useState("");
   const [dashboard, setDashboard] = useState<ChapterDashboardData | null>(null);
+  const [nationalImpact, setNationalImpact] = useState<NationalImpact>(foundingImpact);
   const [adminData, setAdminData] = useState<AdminData>(emptyAdmin);
   const [adminReady, setAdminReady] = useState(false);
   const [adminTab, setAdminTab] = useState<AdminTab>("overview");
@@ -312,6 +331,10 @@ export default function Page() {
         if (!active) return;
         setAuthState("ready");
         setAuthMessage("");
+        try {
+          const result = await invokePortal<{ impact: NationalImpact }>("national-impact");
+          if (active && result.impact) setNationalImpact(result.impact);
+        } catch { /* Keep the verified founding baseline visible if the live summary is temporarily unavailable. */ }
         if (initialView === "admin" && supabase) {
           const { data: allowed } = await supabase.rpc("is_admin");
           if (allowed === true) {
@@ -371,9 +394,22 @@ export default function Page() {
     goTo("access");
   };
 
-  const submitApplication = async (event: FormEvent<HTMLFormElement>) => {
+  const findApplicationMatch = useCallback(async (chapterType: "city" | "school", organizationName: string, location: string) => {
+    await ensureAnonymousSession(captchaToken || undefined);
+    const result = await invokePortal<{ match: ChapterMatch | null }>("application-find-match", {
+      chapter_type: chapterType,
+      organization_name: organizationName,
+      location,
+    });
+    return result.match;
+  }, [captchaToken]);
+
+  const submitApplication = async (event: FormEvent<HTMLFormElement>): Promise<ChapterMatch | null> => {
     event.preventDefault();
-    if (!supabase) return setMessage("The application form is not connected yet.");
+    if (!supabase) {
+      setMessage("The application form is not connected yet.");
+      return null;
+    }
     const formElement = event.currentTarget;
     setBusy(true);
     const form = new FormData(formElement);
@@ -383,6 +419,10 @@ export default function Page() {
       contact_phone: String(form.get("contact_phone") ?? "").trim().slice(0, 40),
       organization_name: String(form.get("organization_name") ?? "").trim().slice(0, 160),
       location: String(form.get("location") ?? "").trim().slice(0, 160),
+      chapter_type: String(form.get("chapter_type") ?? ""),
+      application_kind: String(form.get("application_kind") ?? "new_chapter"),
+      existing_chapter_id: String(form.get("existing_chapter_id") ?? "") || null,
+      create_separate: form.get("create_separate") === "true",
       student_reach: String(form.get("student_reach") ?? "").slice(0, 120),
       why: String(form.get("why") ?? "").trim().slice(0, 5000),
       additional_contacts: form.getAll("additional_name").map((name, index) => ({
@@ -394,17 +434,20 @@ export default function Page() {
     };
     try {
       await ensureAnonymousSession(captchaToken || undefined);
-      const { error } = await supabase.from("chapter_applications").insert(payload);
-      if (error) throw error;
+      const result = await invokePortal<{ submitted?: boolean; match?: ChapterMatch; requires_choice?: boolean; application_kind?: string }>("application-submit", { application: payload });
+      if (result.requires_choice && result.match) {
+        setMessage("A matching chapter already exists. Choose whether to join it or continue separately.");
+        return result.match;
+      }
       formElement.reset();
       goTo("access");
-      setMessage("Application sent. We’ll review it and contact you by email.");
+      setMessage(result.application_kind === "join_existing" ? "Join request sent. We’ll contact you by email." : "Application sent. We’ll review it and contact you by email.");
     } catch (error) {
-      const code = (error as { code?: string })?.code;
-      setMessage(code === "23505" ? "An application has already been submitted from this access session." : error instanceof Error ? error.message : "We couldn’t send your application. Please try again.");
+      setMessage(error instanceof Error ? error.message : "We couldn’t send your application. Please try again.");
     } finally {
       setBusy(false);
     }
+    return null;
   };
 
   const submitReport = async (event: FormEvent<HTMLFormElement>) => {
@@ -416,7 +459,7 @@ export default function Page() {
         week_start: String(form.get("week_start") ?? thisMonday()),
         sessions_held: Number(form.get("sessions_held") ?? 0),
         students_served: Number(form.get("students_served") ?? 0),
-        mentors_present: Number(form.get("mentors_present") ?? 0),
+        instructional_hours: Number(form.get("instructional_hours") ?? 0),
         completed_weekly_tasks: form.get("completed_weekly_tasks") === "on",
         highlights: String(form.get("highlights") ?? ""),
         blockers: String(form.get("blockers") ?? ""),
@@ -532,47 +575,140 @@ export default function Page() {
 
     {notice && <div className="toast" role="status">{notice}<button onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}
 
-    {view === "access" && <AccessView onLogin={chapterLogin} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} goTo={goTo} />}
-    {view === "apply" && <ApplicationView onSubmit={submitApplication} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} />}
+    {view === "access" && <AccessView impact={nationalImpact} onLogin={chapterLogin} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} goTo={goTo} />}
+    {view === "apply" && <ApplicationView onSubmit={submitApplication} onFindMatch={findApplicationMatch} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} />}
     {view === "chapter" && dashboard && <ChapterView data={dashboard} onReport={submitReport} onToggleTask={toggleTask} onAddVolunteer={addVolunteer} onUpdateVolunteer={updateVolunteer} onDeleteVolunteer={deleteVolunteer} onLogout={chapterLogout} busy={busy} />}
     {view === "admin" && <AdminView data={adminData} ready={adminReady} tab={adminTab} setTab={setAdminTab} onLogin={adminLogin} onAction={adminAction} onLogout={adminLogout} issuedCode={issuedCode} setIssuedCode={setIssuedCode} onCaptcha={setCaptchaToken} busy={busy} />}
   </main>;
 }
 
-function AccessView({ onLogin, busy, authState, authMessage, onCaptcha, goTo }: { onLogin: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; authState: AuthState; authMessage: string; onCaptcha: (token: string) => void; goTo: (view: View) => void }) {
-  return <section className="access-shell">
-    <div className="access-card">
-      <div className="card-heading"><span className="tiny-label">Chapter access</span><h1>Enter your chapter code</h1><p>Use the code provided when your chapter was approved.</p></div>
-      <form onSubmit={onLogin} className="stack-form">
-        <Field label="6-digit chapter code"><input className="code-input" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" minLength={6} maxLength={6} placeholder="••••••" required /></Field>
-        {turnstileSiteKey && authState !== "ready" && <TurnstileChallenge onToken={onCaptcha} />}
-        {authMessage && <p className={`access-state ${authState}`}>{authMessage}</p>}
-        <Button type="submit" disabled={busy || authState !== "ready"}>{busy ? "Checking…" : authState === "loading" ? "Preparing secure access…" : "Open chapter dashboard"}</Button>
-      </form>
-      <div className="access-help"><span>Don’t have a code?</span><button onClick={() => goTo("apply")}>Apply to start a chapter</button></div>
-    </div>
-    <button className="admin-entry" onClick={() => goTo("admin")}>Admin sign in</button>
+function NationalImpactCard({ impact }: { impact: NationalImpact }) {
+  const studentSuffix = impact.students_taught_is_minimum ? "+" : "";
+  return <article className="national-impact-card" aria-label={`${impact.name} founding impact`}>
+    <div className="national-impact-copy"><span className="tiny-label">Built by two friends · growing nationally</span><h1>{impact.name}</h1><p>The work completed before the chapter network expands—real sessions, real instruction, and the volunteer team that made them possible.</p><div className="national-student-total"><strong>{impact.students_taught.toLocaleString()}{studentSuffix}</strong><span>students taught so far</span></div></div>
+    <div className="session-ledger" aria-label={`${impact.session_count} sessions held`}><div className="session-ledger-heading"><span>Session ledger</span><strong>{impact.session_count} held</strong></div><div className="session-marks" aria-hidden="true">{Array.from({ length: Math.min(36, impact.session_count) }, (_, index) => <i key={index} />)}</div></div>
+    <dl className="national-impact-stats"><div><dt>Instruction</dt><dd>{Number(impact.instructional_hours).toLocaleString(undefined, { maximumFractionDigits: 2 })} hours</dd></div><div><dt>Volunteer team</dt><dd>{impact.volunteer_count} people</dd></div><div><dt>National network</dt><dd>{impact.chapter_count} chapter</dd></div></dl>
+  </article>;
+}
+
+function AccessView({ impact, onLogin, busy, authState, authMessage, onCaptcha, goTo }: { impact: NationalImpact; onLogin: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; authState: AuthState; authMessage: string; onCaptcha: (token: string) => void; goTo: (view: View) => void }) {
+  return <section className="access-shell national-access">
+    <NationalImpactCard impact={impact} />
+    <div className="access-column"><div className="access-card">
+        <div className="card-heading"><span className="tiny-label">Chapter access</span><h1>Enter your chapter code</h1><p>Use the code provided when your chapter was approved.</p></div>
+        <form onSubmit={onLogin} className="stack-form">
+          <Field label="6-digit chapter code"><input className="code-input" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" minLength={6} maxLength={6} placeholder="••••••" required /></Field>
+          {turnstileSiteKey && authState !== "ready" && <TurnstileChallenge onToken={onCaptcha} />}
+          {authMessage && <p className={`access-state ${authState}`}>{authMessage}</p>}
+          <Button type="submit" disabled={busy || authState !== "ready"}>{busy ? "Checking…" : authState === "loading" ? "Preparing secure access…" : "Open chapter dashboard"}</Button>
+        </form>
+        <div className="access-help"><span>Don’t have a code?</span><button onClick={() => goTo("apply")}>Apply to start a chapter</button></div>
+      </div><button className="admin-entry" onClick={() => goTo("admin")}>Admin sign in</button></div>
   </section>;
 }
 
-function ApplicationView({ onSubmit, busy, authState, authMessage, onCaptcha }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; authState: AuthState; authMessage: string; onCaptcha: (token: string) => void }) {
+function ApplicationView({ onSubmit, onFindMatch, busy, authState, authMessage, onCaptcha }: { onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<ChapterMatch | null>; onFindMatch: (chapterType: "city" | "school", organizationName: string, location: string) => Promise<ChapterMatch | null>; busy: boolean; authState: AuthState; authMessage: string; onCaptcha: (token: string) => void }) {
   const [additionalPeople, setAdditionalPeople] = useState<string[]>([]);
+  const [chapterType, setChapterType] = useState<"city" | "school">("school");
+  const [organizationName, setOrganizationName] = useState("");
+  const [location, setLocation] = useState("");
+  const [match, setMatch] = useState<ChapterMatch | null>(null);
+  const [intent, setIntent] = useState<"new" | "unresolved" | "join" | "separate">("new");
+  const [checking, setChecking] = useState(false);
+  const matchRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const searchable = chapterType === "city" ? location.trim().length >= 2 : organizationName.trim().length >= 2 && location.trim().length >= 2;
+    if (!searchable || authState !== "ready") return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      setChecking(true);
+      void onFindMatch(chapterType, organizationName, location)
+        .then((found) => {
+          if (!active) return;
+          setMatch(found);
+          setIntent(found ? "unresolved" : "new");
+        })
+        .catch(() => {
+          if (!active) return;
+          setMatch(null);
+          setIntent("new");
+        })
+        .finally(() => { if (active) setChecking(false); });
+    }, 450);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [authState, chapterType, location, onFindMatch, organizationName]);
+
+  useEffect(() => {
+    if (match && intent === "unresolved") matchRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [intent, match]);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    if (match && intent === "unresolved") {
+      event.preventDefault();
+      matchRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    const lateMatch = await onSubmit(event);
+    if (lateMatch) {
+      setMatch(lateMatch);
+      setIntent("unresolved");
+    }
+  };
+
+  const changeType = (next: "city" | "school") => {
+    setChapterType(next);
+    setMatch(null);
+    setIntent("new");
+  };
+
+  const changeOrganizationName = (value: string) => {
+    setOrganizationName(value);
+    setMatch(null);
+    setIntent("new");
+    setChecking(false);
+  };
+
+  const changeLocation = (value: string) => {
+    setLocation(value);
+    setMatch(null);
+    setIntent("new");
+    setChecking(false);
+  };
+
   return <section className="form-page">
-    <div className="page-heading"><span className="tiny-label">Chapter application</span><h1>Start a chapter</h1><p>Add the primary lead and anyone else who will help run the chapter. We’ll keep the full team together when the chapter is approved.</p></div>
-    <form className="surface-form" onSubmit={onSubmit}>
+    <div className="page-heading"><span className="tiny-label">Chapter application</span><h1>Start a chapter</h1><p>Choose a city or school chapter first. We’ll check for an existing chapter so you can join the same team instead of accidentally starting a duplicate.</p></div>
+    <form className="surface-form" onSubmit={handleSubmit}>
+      <fieldset className="chapter-type-fieldset"><legend>What kind of chapter are you starting?</legend><div className="chapter-type-grid">
+        <label className={chapterType === "school" ? "selected" : ""}><input type="radio" name="chapter_type_choice" value="school" checked={chapterType === "school"} onChange={() => changeType("school")} /><span className="type-icon" aria-hidden="true">S</span><span><strong>School chapter</strong><small>For students at one specific school.</small></span></label>
+        <label className={chapterType === "city" ? "selected" : ""}><input type="radio" name="chapter_type_choice" value="city" checked={chapterType === "city"} onChange={() => changeType("city")} /><span className="type-icon" aria-hidden="true">C</span><span><strong>City chapter</strong><small>For students across the same city.</small></span></label>
+      </div></fieldset>
+      <input type="hidden" name="chapter_type" value={chapterType} />
+      <input type="hidden" name="application_kind" value={intent === "join" ? "join_existing" : "new_chapter"} />
+      <input type="hidden" name="existing_chapter_id" value={intent === "join" ? match?.id ?? "" : ""} />
+      <input type="hidden" name="create_separate" value={intent === "separate" ? "true" : "false"} />
+
+      <div className="chapter-identity"><div><span className="section-kicker">Chapter identity</span><h2>{chapterType === "school" ? "Name the school" : "Name the city team"}</h2><p>{chapterType === "school" ? "School chapters match by school name." : "City chapters match by city and state."}</p></div><div className="form-grid">
+        <Field label={chapterType === "school" ? "School name" : "Chapter name"}><input name="organization_name" value={organizationName} onChange={(event) => changeOrganizationName(event.target.value)} minLength={2} maxLength={160} placeholder={chapterType === "school" ? "East Ridge High School" : "Raleigh Chapter"} required /></Field>
+        <Field label="City and state" hint={checking ? "Checking for an existing chapter…" : undefined}><input name="location" value={location} onChange={(event) => changeLocation(event.target.value)} minLength={2} maxLength={160} placeholder="Raleigh, NC" required /></Field>
+      </div></div>
+
+      {match && <section ref={matchRef} className={`chapter-match ${intent === "join" || intent === "separate" ? "decided" : ""}`} aria-live="polite">
+        <div className="match-marker"><Logo /></div><div className="match-copy"><span className="section-kicker">Existing {match.chapter_type} chapter found</span><h2>{match.name}</h2><p>{match.location}</p>{intent === "unresolved" ? <><strong className="match-question">Would you rather join this team?</strong><small>Joining keeps everyone from the same {match.chapter_type === "city" ? "city" : "school"} together. You can still request a separate chapter.</small></> : <strong className="match-decision">{intent === "join" ? "Your application will be a request to join this chapter." : "You’re continuing with a separate chapter application."}</strong>}</div>
+        <div className="match-actions">{intent === "unresolved" ? <><Button type="button" onClick={() => setIntent("join")}>Request to join</Button><Button type="button" kind="secondary" onClick={() => setIntent("separate")}>Start separately</Button></> : <Button type="button" kind="quiet" onClick={() => setIntent("unresolved")}>Change choice</Button>}</div>
+      </section>}
+
       <div className="form-grid">
         <Field label="Primary lead name"><input name="contact_name" minLength={2} maxLength={120} required /></Field>
         <Field label="Primary lead email"><input name="contact_email" type="email" maxLength={254} required /></Field>
         <Field label="Primary lead phone"><input name="contact_phone" type="tel" maxLength={40} required /></Field>
-        <Field label="School or organization"><input name="organization_name" minLength={2} maxLength={160} required /></Field>
-        <Field label="City and state"><input name="location" minLength={2} maxLength={160} placeholder="Raleigh, NC" required /></Field>
         <Field label="Students you plan to serve"><select name="student_reach" required defaultValue=""><option value="" disabled>Select one</option><option>K–5</option><option>Middle school</option><option>K–8</option><option>Competition math</option></select></Field>
       </div>
       <section className="people-builder"><div className="people-builder-heading"><div><h2>Additional team members</h2><p>Add co-leads, officers, or volunteers who are joining with the primary lead.</p></div><Button type="button" kind="secondary" onClick={() => setAdditionalPeople((people) => [...people, crypto.randomUUID()])}>Add another person</Button></div>{additionalPeople.length ? <div className="people-stack">{additionalPeople.map((person, index) => <div className="person-row" key={person}><div className="person-row-heading"><strong>Person {index + 2}</strong><button type="button" onClick={() => setAdditionalPeople((people) => people.filter((id) => id !== person))}>Remove</button></div><div className="form-grid four"><Field label="Full name"><input name="additional_name" minLength={2} maxLength={120} required /></Field><Field label="Email"><input name="additional_email" type="email" maxLength={254} /></Field><Field label="Phone"><input name="additional_phone" type="tel" maxLength={40} /></Field><Field label="Role"><input name="additional_role" maxLength={80} placeholder="Co-lead, volunteer…" defaultValue="Volunteer" /></Field></div></div>)}</div> : <p className="people-empty">Only one person? You can continue without adding anyone else.</p>}</section>
-      <Field label="Why do you want to start this chapter?"><textarea name="why" rows={5} maxLength={5000} required /></Field>
+      <Field label={intent === "join" ? "Why do you want to join this chapter?" : "Why do you want to start this chapter?"}><textarea name="why" rows={5} maxLength={5000} required /></Field>
       {turnstileSiteKey && authState !== "ready" && <TurnstileChallenge onToken={onCaptcha} />}
       {authMessage && <p className={`access-state ${authState}`}>{authMessage}</p>}
-      <div className="form-footer"><p>Applications are reviewed manually. Approved chapters receive a private access code.</p><Button type="submit" disabled={busy || authState !== "ready"}>{busy ? "Sending…" : authState === "loading" ? "Preparing secure form…" : "Send application"}</Button></div>
+      <div className="form-footer"><p>{intent === "join" ? "TMM will review your join request and connect you with the existing chapter." : "Applications are reviewed manually. Approved chapters receive a private access code."}</p><Button type="submit" disabled={busy || checking || authState !== "ready"}>{busy ? "Sending…" : checking ? "Checking chapter…" : authState === "loading" ? "Preparing secure form…" : intent === "join" ? "Send join request" : "Send application"}</Button></div>
     </form>
   </section>;
 }
@@ -591,6 +727,7 @@ function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVol
   const visibleVolunteers = showInactiveVolunteers ? data.volunteers : activeVolunteers;
   const chapterStudents = data.reports.reduce((sum, report) => sum + report.students_served, 0);
   const chapterSessions = data.reports.reduce((sum, report) => sum + report.sessions_held, 0);
+  const chapterHours = data.reports.reduce((sum, report) => sum + Number(report.instructional_hours), 0);
   const nextEvent = [...data.events].sort((a, b) => a.starts_at.localeCompare(b.starts_at))[0];
   const notifications: { tone: string; label: string; title: string; detail: string; href: string }[] = [];
   notifications.push(current
@@ -623,6 +760,7 @@ function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVol
       <div className="metric-strip chapter-metrics">
         <div><span>Students impacted</span><strong>{chapterStudents.toLocaleString()}</strong><small>Reported by your chapter</small></div>
         <div><span>Sessions held</span><strong>{chapterSessions.toLocaleString()}</strong><small>Across all weekly reports</small></div>
+        <div><span>Instructional hours</span><strong>{chapterHours.toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong><small>Direct teaching time</small></div>
         <div><span>Weekly check-in</span><strong>{current ? "Submitted" : "Due Sunday"}</strong><small>{longDate(due)}</small></div>
         <div><span>Assignments</span><strong>{openTasks.length} open</strong><small>{data.tasks.length - openTasks.length} completed</small></div>
         <div><span>Volunteer team</span><strong>{activeVolunteers.length} active</strong><small>{data.volunteers.length} total people</small></div>
@@ -650,7 +788,7 @@ function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVol
         <div className="form-zone-heading"><div><span className="section-kicker">Weekly check-in · due every Sunday</span><h2>{current ? "Update this week’s report" : "Complete this week’s report"}</h2><p>Use this form after reviewing your assignments and chapter activity above.</p></div><div className="sunday-chip"><span>Due</span><strong>{longDate(due)}</strong><small>{dueTiming(due)}</small></div></div>
         <div className="section-title"><div><p>Tell TMM what happened, what is next, and where your chapter needs support.</p></div><div className="review-meta">{current && <span className={`review-pill ${current.review_status ?? "pending"}`}>{reviewLabel(current.review_status)}</span>}{latest && <span className="last-saved">Last saved {new Date(latest.submitted_at).toLocaleDateString()}</span>}</div></div>
         <form className="weekly-form" onSubmit={onReport}>
-          <div className="form-grid four"><Field label="Week starting"><input type="date" name="week_start" defaultValue={thisMonday()} required /></Field><Field label="Sessions held"><input type="number" min="0" name="sessions_held" defaultValue={current?.sessions_held ?? 0} required /></Field><Field label="Students served"><input type="number" min="0" name="students_served" defaultValue={current?.students_served ?? 0} required /></Field><Field label="Mentors present"><input type="number" min="0" name="mentors_present" defaultValue={current?.mentors_present ?? 0} required /></Field></div>
+          <div className="form-grid four"><Field label="Week starting"><input type="date" name="week_start" defaultValue={thisMonday()} required /></Field><Field label="Sessions held"><input type="number" min="0" name="sessions_held" defaultValue={current?.sessions_held ?? 0} required /></Field><Field label="Students served"><input type="number" min="0" name="students_served" defaultValue={current?.students_served ?? 0} required /></Field><Field label="Instructional hours"><input type="number" min="0" max="1000" step="0.25" name="instructional_hours" defaultValue={current?.instructional_hours ?? 0} required /></Field></div>
           <label className="check-row"><input type="checkbox" name="completed_weekly_tasks" defaultChecked={current?.completed_weekly_tasks ?? false} /><span>We completed the required weekly tasks.</span></label>
           <div className="form-grid"><Field label="What did your chapter accomplish?"><textarea name="highlights" rows={4} defaultValue={current?.highlights ?? ""} placeholder="Sessions, outreach, curriculum work, wins…" required /></Field><Field label="What challenges came up?"><textarea name="blockers" rows={4} defaultValue={current?.blockers ?? ""} placeholder="Attendance, scheduling, materials…" /></Field><Field label="What is planned for next week?"><textarea name="next_week_plan" rows={4} defaultValue={current?.next_week_plan ?? ""} placeholder="Goals, sessions, outreach, deadlines…" required /></Field><Field label="What support do you need from TMM?"><textarea name="support_needed" rows={4} defaultValue={current?.support_needed ?? ""} placeholder="Optional — resources, advice, introductions…" /></Field></div>
           <div className="form-footer"><p>Submitting again replaces this week’s report and returns it to TMM’s review queue.</p><Button type="submit" disabled={busy}>{busy ? "Submitting…" : current ? "Update weekly report" : "Submit weekly report"}</Button></div>
@@ -696,11 +834,7 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
   const visibleApplications = showClosedApplications ? data.applications : pendingApplications;
   const completedAdminTasks = data.tasks.filter((task) => task.status === "complete");
   const visibleAdminTasks = showCompletedAdminTasks ? data.tasks : openAdminTasks;
-  const studentsImpacted = data.reports.reduce((sum, report) => sum + report.students_served, 0);
-  const sessionsHeld = data.reports.reduce((sum, report) => sum + report.sessions_held, 0);
-  const mentorsReported = data.reports.reduce((sum, report) => sum + report.mentors_present, 0);
-  const activeChapterCount = data.chapters.filter((chapter) => chapter.status === "active").length;
-  const activeVolunteerCount = data.volunteers.filter((volunteer) => volunteer.status === "active").length;
+  const nationalBaseline = data.nationalImpact ?? foundingImpact;
   if (!ready) return <section className="access-shell"><div className="access-card"><div className="card-heading"><span className="tiny-label">Admin access</span><h1>Enter admin code</h1><p>Use the secure 6-digit administrator access code.</p></div><form className="stack-form" onSubmit={onLogin}><Field label="6-digit admin code"><input className="code-input" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" minLength={6} maxLength={6} placeholder="••••••" required /></Field>{turnstileSiteKey && <TurnstileChallenge onToken={onCaptcha} />}<Button type="submit" disabled={busy}>{busy ? "Checking…" : "Open admin dashboard"}</Button></form></div></section>;
 
   const submitChapter = (event: FormEvent<HTMLFormElement>) => {
@@ -721,11 +855,11 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
   };
   const exportReviews = () => {
     const quote = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
-    const header = ["Chapter", "Week", "Submitted", "Sessions", "Students", "Mentors", "Tasks complete", "Review status", "Private rating", "Private notes", "Public feedback"];
+    const header = ["Chapter", "Week", "Submitted", "Sessions", "Students", "Instructional hours", "Tasks complete", "Review status", "Private rating", "Private notes", "Public feedback"];
     const rows = data.reports.map((report) => {
       const chapter = data.chapters.find((item) => item.id === report.chapter_id);
       const review = reviewByReport.get(report.id);
-      return [chapter?.name, report.week_start, report.submitted_at, report.sessions_held, report.students_served, report.mentors_present, report.completed_weekly_tasks ? "Yes" : "No", review?.status ?? "pending", review?.rating ?? "", review?.private_notes ?? "", review?.public_feedback ?? ""];
+      return [chapter?.name, report.week_start, report.submitted_at, report.sessions_held, report.students_served, report.instructional_hours, report.completed_weekly_tasks ? "Yes" : "No", review?.status ?? "pending", review?.rating ?? "", review?.private_notes ?? "", review?.public_feedback ?? ""];
     });
     const blob = new Blob([[header, ...rows].map((row) => row.map(quote).join(",")).join("\n")], { type: "text/csv;charset=utf-8" });
     const link = document.createElement("a");
@@ -743,7 +877,7 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
 
       {tab === "overview" && <>
         <div className="admin-deadline-line"><span>Weekly reports are due every Sunday</span><strong>{currentWeekReportChapters.size}/{data.chapters.filter((chapter) => chapter.status === "active").length} submitted</strong><small>{longDate(weekDueDate())} · {dueTiming(weekDueDate())}</small></div>
-        <section className="impact-panel" aria-label="Our impact"><div className="impact-heading"><div><span className="section-kicker">All-time reported totals</span><h2>Our impact</h2></div><small>Updates automatically from chapter weekly reports.</small></div><div className="impact-grid"><div><strong>{studentsImpacted.toLocaleString()}</strong><span>Students impacted</span></div><div><strong>{sessionsHeld.toLocaleString()}</strong><span>Sessions held</span></div><div><strong>{activeVolunteerCount.toLocaleString()}</strong><span>Active volunteers</span></div><div><strong>{mentorsReported.toLocaleString()}</strong><span>Mentor attendances</span></div><div><strong>{activeChapterCount.toLocaleString()}</strong><span>Active chapters</span></div></div></section>
+        <section className="impact-panel" aria-label="Our impact"><div className="impact-heading"><div><span className="section-kicker">{nationalBaseline.name} · founding baseline</span><h2>Our impact</h2></div><small>Verified totals from the work completed so far.</small></div><div className="impact-grid"><div><strong>{nationalBaseline.students_taught.toLocaleString()}{nationalBaseline.students_taught_is_minimum ? "+" : ""}</strong><span>Students taught</span></div><div><strong>{nationalBaseline.instructional_hours.toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong><span>Instructional hours</span></div><div><strong>{nationalBaseline.volunteer_count.toLocaleString()}</strong><span>Volunteers</span></div><div><strong>{nationalBaseline.session_count.toLocaleString()}</strong><span>Sessions held</span></div><div><strong>{nationalBaseline.chapter_count.toLocaleString()}</strong><span>National chapter</span></div></div></section>
         <div className="admin-focus-grid">
           <button className={missingReports.length ? "urgent" : "clear"} onClick={() => setTab("reviews")}><span>Missing reports</span><strong>{missingReports.length}</strong><small>Due Sunday</small></button>
           <button onClick={() => setTab("reviews")}><span>Awaiting review</span><strong>{reviewQueue.length}</strong><small>{followUps} need follow-up</small></button>
@@ -758,7 +892,21 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
         </div></details>
       </>}
 
-      {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Open applications stay visible. Approved and declined records are hidden by default.</p></div>{closedApplications.length > 0 && <button className="visibility-toggle" onClick={() => setShowClosedApplications((value) => !value)}>{showClosedApplications ? "Hide closed" : `Show ${closedApplications.length} closed`}</button>}</div><div className="application-list">{visibleApplications.length ? visibleApplications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>Primary lead: {application.contact_name}</span><a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.additional_contacts?.length ? <div className="applicant-team"><span className="section-kicker">Additional team members</span>{application.additional_contacts.map((contact, index) => <div key={`${contact.email}-${index}`}><strong>{contact.full_name}</strong><span>{contact.role || "Volunteer"}</span>{contact.email && <a href={`mailto:${contact.email}`}>{contact.email}</a>}{contact.phone && <span>{contact.phone}</span>}</div>)}</div> : null}{application.why && <p>{application.why}</p>}<div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & create code</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}{application.status === "declined" && <Button kind="danger" disabled={busy} onClick={() => window.confirm(`Permanently delete the declined application from ${application.organization_name}?`) && onAction("admin-delete-application", { application_id: application.id })}>Delete</Button>}</div></article>) : <Empty text={closedApplications.length ? "No applications need a decision. Use Show closed to view older records." : "No applications yet."} />}</div></section>}
+      {tab === "applications" && <section className="admin-section">
+        <div className="section-title"><div><h2>Chapter applications</h2><p>New chapter applications and requests to join existing teams are reviewed here.</p></div>{closedApplications.length > 0 && <button className="visibility-toggle" onClick={() => setShowClosedApplications((value) => !value)}>{showClosedApplications ? "Hide closed" : `Show ${closedApplications.length} closed`}</button>}</div>
+        <div className="application-list">{visibleApplications.length ? visibleApplications.map((application) => {
+          const joinChapter = application.existing_chapter_id ? data.chapters.find((chapter) => chapter.id === application.existing_chapter_id) : undefined;
+          const isJoin = application.application_kind === "join_existing";
+          return <article className={`application-card ${isJoin ? "join-request" : ""}`} key={application.id}>
+            <div className="application-top"><div><span className="application-kind">{isJoin ? "Join request" : `${application.chapter_type === "city" ? "City" : "School"} chapter`}</span><strong>{isJoin ? joinChapter?.name ?? application.organization_name : application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div>
+            <div className="application-meta"><span>Applicant: {application.contact_name}</span><a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>
+            {isJoin && <div className="join-target"><span>Existing chapter</span><strong>{joinChapter?.name ?? "Chapter unavailable"}</strong><small>{joinChapter?.location ?? "The selected chapter could not be found."}</small></div>}
+            {application.additional_contacts?.length ? <div className="applicant-team"><span className="section-kicker">Additional team members</span>{application.additional_contacts.map((contact, index) => <div key={`${contact.email}-${index}`}><strong>{contact.full_name}</strong><span>{contact.role || "Volunteer"}</span>{contact.email && <a href={`mailto:${contact.email}`}>{contact.email}</a>}{contact.phone && <span>{contact.phone}</span>}</div>)}</div> : null}
+            {application.why && <p>{application.why}</p>}
+            <div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>{isJoin ? "Approve & add to chapter" : "Approve & create code"}</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}{application.status === "declined" && <Button kind="danger" disabled={busy} onClick={() => window.confirm(`Permanently delete the declined application from ${application.organization_name}?`) && onAction("admin-delete-application", { application_id: application.id })}>Delete</Button>}</div>
+          </article>;
+        }) : <Empty text={closedApplications.length ? "No applications need a decision. Use Show closed to view older records." : "No applications yet."} />}</div>
+      </section>}
 
       {tab === "reviews" && <>
         <div className="metric-strip admin-metrics">
@@ -778,8 +926,8 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
       </>}
 
       {tab === "chapters" && <>
-        <section className="admin-section"><div className="section-title"><div><span className="section-kicker">Network directory</span><h2>All chapters</h2><p>Contacts, volunteers, weekly reporting status, and secure code management.</p></div></div>{data.chapters.length ? <div className="chapter-list">{data.chapters.map((chapter) => { const report = latestReport.get(chapter.id); const volunteers = data.volunteers.filter((volunteer) => volunteer.chapter_id === chapter.id && volunteer.status === "active").length; return <article className="chapter-row" key={chapter.id}><div><strong>{chapter.name}</strong><span>{chapter.location} · {volunteers} active volunteer{volunteers === 1 ? "" : "s"}</span></div><div><span>{chapter.contact_name}</span><a href={`mailto:${chapter.contact_email}`}>{chapter.contact_email}</a>{chapter.contact_phone && <span>{chapter.contact_phone}</span>}</div><div><span>Latest report</span><strong className="plain-strong">{report ? new Date(`${report.week_start}T12:00:00`).toLocaleDateString() : "Not submitted"}</strong></div><div className="chapter-row-end"><Status value={chapter.status} /><span className="code-hint">Code ends •{chapter.access_code_hint ?? "—"}</span><Button kind="secondary" disabled={busy} onClick={() => onAction("admin-reset-code", { chapter_id: chapter.id }, chapter.name)}>Reset code</Button></div></article>; })}</div> : <Empty text="No chapters have been added." />}</section>
-        <details className="admin-section disclosure-form form-zone"><summary><span><strong>Add a chapter manually</strong><small>Open only when you need to create a chapter without an application.</small></span><b>＋</b></summary><form className="surface-form compact disclosure-content" onSubmit={submitChapter}><div className="form-grid three"><Field label="Chapter name"><input name="name" required /></Field><Field label="City and state"><input name="location" required /></Field><Field label="Lead name"><input name="contact_name" required /></Field><Field label="Lead email"><input name="contact_email" type="email" required /></Field><Field label="Lead phone"><input name="contact_phone" type="tel" /></Field><Field label="Custom 6-digit code" hint="Optional · exactly 6 digits"><input name="code" className="code-input small" inputMode="numeric" pattern="[0-9]{6}" minLength={6} maxLength={6} /></Field><Field label="Advisor name"><input name="advisor_name" /></Field><Field label="Advisor email"><input name="advisor_email" type="email" /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>Add chapter</Button></div></form></details>
+        <section className="admin-section"><div className="section-title"><div><span className="section-kicker">Network directory</span><h2>All chapters</h2><p>Contacts, volunteers, weekly reporting status, and secure code management.</p></div></div>{data.chapters.length ? <div className="chapter-list">{data.chapters.map((chapter) => { const report = latestReport.get(chapter.id); const volunteers = data.volunteers.filter((volunteer) => volunteer.chapter_id === chapter.id && volunteer.status === "active").length; return <article className="chapter-row" key={chapter.id}><div><strong>{chapter.name}</strong><span>{chapter.chapter_type === "city" ? "City chapter" : "School chapter"} · {chapter.location} · {volunteers} active volunteer{volunteers === 1 ? "" : "s"}</span></div><div><span>{chapter.contact_name}</span><a href={`mailto:${chapter.contact_email}`}>{chapter.contact_email}</a>{chapter.contact_phone && <span>{chapter.contact_phone}</span>}</div><div><span>Latest report</span><strong className="plain-strong">{report ? new Date(`${report.week_start}T12:00:00`).toLocaleDateString() : "Not submitted"}</strong></div><div className="chapter-row-end"><Status value={chapter.status} /><span className="code-hint">Code ends •{chapter.access_code_hint ?? "—"}</span><Button kind="secondary" disabled={busy} onClick={() => onAction("admin-reset-code", { chapter_id: chapter.id }, chapter.name)}>Reset code</Button></div></article>; })}</div> : <Empty text="No chapters have been added." />}</section>
+        <details className="admin-section disclosure-form form-zone"><summary><span><strong>Add a chapter manually</strong><small>Open only when you need to create a chapter without an application.</small></span><b>＋</b></summary><form className="surface-form compact disclosure-content" onSubmit={submitChapter}><div className="form-grid three"><Field label="Chapter type"><select name="chapter_type" defaultValue="school" required><option value="school">School chapter</option><option value="city">City chapter</option></select></Field><Field label="Chapter name"><input name="name" required /></Field><Field label="City and state"><input name="location" required /></Field><Field label="Lead name"><input name="contact_name" required /></Field><Field label="Lead email"><input name="contact_email" type="email" required /></Field><Field label="Lead phone"><input name="contact_phone" type="tel" /></Field><Field label="Custom 6-digit code" hint="Optional · exactly 6 digits"><input name="code" className="code-input small" inputMode="numeric" pattern="[0-9]{6}" minLength={6} maxLength={6} /></Field><Field label="Advisor name"><input name="advisor_name" /></Field><Field label="Advisor email"><input name="advisor_email" type="email" /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>Add chapter</Button></div></form></details>
       </>}
 
       {tab === "work" && <>
@@ -815,7 +963,7 @@ function ReviewCard({ report, review, chapter, onAction, busy }: { report: Repor
       <div><span className="tiny-label">Week of {new Date(`${report.week_start}T12:00:00`).toLocaleDateString()}</span><h3>{chapter?.name ?? "Chapter"}</h3><p>Submitted {new Date(report.submitted_at).toLocaleString()}</p></div>
       <span className={`review-pill ${review?.status ?? "pending"}`}>{reviewLabel(review?.status)}</span>
     </div>
-    <div className="report-stats"><span><strong>{report.sessions_held}</strong> sessions</span><span><strong>{report.students_served}</strong> students</span><span><strong>{report.mentors_present}</strong> mentors</span><span><strong>{report.completed_weekly_tasks ? "Yes" : "No"}</strong> tasks done</span></div>
+    <div className="report-stats"><span><strong>{report.sessions_held}</strong> sessions</span><span><strong>{report.students_served}</strong> students</span><span><strong>{Number(report.instructional_hours).toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong> instruction hours</span><span><strong>{report.completed_weekly_tasks ? "Yes" : "No"}</strong> tasks done</span></div>
     <div className="report-narrative">
       <div><span>Accomplishments</span><p>{report.highlights || "Nothing entered."}</p></div>
       <div><span>Challenges</span><p>{report.blockers || "Nothing entered."}</p></div>

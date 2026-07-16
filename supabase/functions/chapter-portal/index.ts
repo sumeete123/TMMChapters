@@ -43,8 +43,34 @@ function boundedWholeNumber(value: unknown, maximum: number) {
   return Number.isInteger(number) && number >= 0 && number <= maximum ? number : null;
 }
 
+function boundedDecimal(value: unknown, maximum: number) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 && number <= maximum ? Math.round(number * 100) / 100 : null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function chapterMatchKey(chapterType: string, organizationName: string, location: string) {
+  const source = chapterType === "city" ? location : `${organizationName}|${location}`;
+  return source.toLowerCase().trim().replace(/[^a-z0-9]+/g, "");
+}
+
+async function findChapterMatch(chapterType: string, organizationName: string, location: string) {
+  if (!["city", "school"].includes(chapterType)) return null;
+  const matchKey = chapterMatchKey(chapterType, organizationName, location);
+  if (matchKey.length < 2) return null;
+  const { data, error } = await admin.from("chapters")
+    .select("id, name, location, chapter_type")
+    .eq("chapter_type", chapterType)
+    .eq("match_key", matchKey)
+    .eq("status", "active")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
 }
 
 async function requestAuth(req: Request) {
@@ -70,13 +96,22 @@ async function currentChapterId(userClient: SupabaseClient) {
   return error ? null : data as string | null;
 }
 
+async function getNationalImpact() {
+  const { data, error } = await admin.from("national_chapter_impact")
+    .select("name, students_taught, students_taught_is_minimum, instructional_hours, volunteer_count, session_count, chapter_count, as_of_date")
+    .eq("id", "national")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 async function getChapterDashboard(chapterId: string) {
   const now = new Date().toISOString();
   const [chapterResult, tasksResult, eventsResult, reportsResult, volunteersResult] = await Promise.all([
     admin.from("chapters").select("id, name, location, contact_name, contact_email, status").eq("id", chapterId).single(),
     admin.from("tasks").select("id, title, description, due_date, priority, status, completed_at").eq("assigned_chapter_id", chapterId).neq("status", "archived").order("due_date", { ascending: true, nullsFirst: false }),
     admin.from("events").select("id, title, description, starts_at, ends_at, location, link, chapter_id").or(`chapter_id.is.null,chapter_id.eq.${chapterId}`).gte("starts_at", now).order("starts_at", { ascending: true }).limit(10),
-    admin.from("weekly_reports").select("id, week_start, sessions_held, students_served, mentors_present, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").eq("chapter_id", chapterId).order("week_start", { ascending: false }).limit(8),
+    admin.from("weekly_reports").select("id, week_start, sessions_held, students_served, instructional_hours, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").eq("chapter_id", chapterId).order("week_start", { ascending: false }).limit(8),
     admin.from("chapter_volunteers").select("id, full_name, email, phone, role, joined_on, status, notes, created_at, updated_at").eq("chapter_id", chapterId).order("status").order("full_name"),
   ]);
   const firstError = [chapterResult.error, tasksResult.error, eventsResult.error, reportsResult.error, volunteersResult.error].find(Boolean);
@@ -104,18 +139,19 @@ async function getChapterDashboard(chapterId: string) {
 }
 
 async function adminOverview() {
-  const [applications, chapters, reports, reviews, tasks, events, volunteers] = await Promise.all([
-    admin.from("chapter_applications").select("id, contact_name, contact_email, contact_phone, additional_contacts, organization_name, location, student_reach, why, status, internal_notes, created_at").order("created_at", { ascending: false }),
-    admin.from("chapters").select("id, name, slug, location, contact_name, contact_email, contact_phone, advisor_name, advisor_email, status, access_code_hint, created_at").order("name"),
-    admin.from("weekly_reports").select("id, chapter_id, week_start, sessions_held, students_served, mentors_present, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").order("week_start", { ascending: false }).limit(200),
+  const [applications, chapters, reports, reviews, tasks, events, volunteers, nationalImpact] = await Promise.all([
+    admin.from("chapter_applications").select("id, contact_name, contact_email, contact_phone, additional_contacts, organization_name, location, chapter_type, application_kind, existing_chapter_id, student_reach, why, status, internal_notes, created_at").order("created_at", { ascending: false }),
+    admin.from("chapters").select("id, name, slug, location, chapter_type, contact_name, contact_email, contact_phone, advisor_name, advisor_email, status, access_code_hint, created_at").order("name"),
+    admin.from("weekly_reports").select("id, chapter_id, week_start, sessions_held, students_served, instructional_hours, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").order("week_start", { ascending: false }).limit(200),
     admin.from("weekly_report_reviews").select("report_id, status, rating, private_notes, public_feedback, reviewed_at, reviewed_by, updated_at").order("updated_at", { ascending: false }).limit(200),
     admin.from("tasks").select("id, title, description, assigned_chapter_id, due_date, priority, status, completed_at, created_at").order("created_at", { ascending: false }).limit(200),
     admin.from("events").select("id, title, description, starts_at, ends_at, location, link, chapter_id, created_at").order("starts_at", { ascending: true }).limit(100),
     admin.from("chapter_volunteers").select("id, chapter_id, full_name, email, phone, role, joined_on, status, notes, created_at, updated_at").order("created_at", { ascending: false }).limit(500),
+    getNationalImpact(),
   ]);
   const firstError = [applications.error, chapters.error, reports.error, reviews.error, tasks.error, events.error, volunteers.error].find(Boolean);
   if (firstError) throw firstError;
-  return { applications: applications.data ?? [], chapters: chapters.data ?? [], reports: reports.data ?? [], reviews: reviews.data ?? [], tasks: tasks.data ?? [], events: events.data ?? [], volunteers: volunteers.data ?? [] };
+  return { applications: applications.data ?? [], chapters: chapters.data ?? [], reports: reports.data ?? [], reviews: reviews.data ?? [], tasks: tasks.data ?? [], events: events.data ?? [], volunteers: volunteers.data ?? [], nationalImpact };
 }
 
 async function provisionUniqueChapterCode(chapterId: string, requestedCode?: unknown) {
@@ -153,6 +189,71 @@ Deno.serve(async (req: Request) => {
     if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "Send a valid JSON request." }, 400);
     const action = String(body.action ?? "");
 
+    if (action === "national-impact") return json({ impact: await getNationalImpact() });
+
+    if (action === "application-find-match") {
+      const chapterType = String(body.chapter_type ?? "");
+      const organizationName = String(body.organization_name ?? "").trim().slice(0, 160);
+      const location = String(body.location ?? "").trim().slice(0, 160);
+      return json({ match: await findChapterMatch(chapterType, organizationName, location) });
+    }
+
+    if (action === "application-submit") {
+      const application = asRecord(body.application);
+      const chapterType = String(application.chapter_type ?? "");
+      const applicationKind = String(application.application_kind ?? "new_chapter");
+      const organizationName = String(application.organization_name ?? "").trim().slice(0, 160);
+      const location = String(application.location ?? "").trim().slice(0, 160);
+      const contactName = String(application.contact_name ?? "").trim().slice(0, 120);
+      const contactEmail = String(application.contact_email ?? "").trim().toLowerCase().slice(0, 254);
+      const contactPhone = String(application.contact_phone ?? "").trim().slice(0, 40);
+      if (!["city", "school"].includes(chapterType)) return json({ error: "Choose a city or school chapter." }, 400);
+      if (!["new_chapter", "join_existing"].includes(applicationKind)) return json({ error: "Choose whether to join or start a chapter." }, 400);
+      if (organizationName.length < 2 || location.length < 2) return json({ error: "Enter the chapter name and city." }, 400);
+      if (contactName.length < 2 || !contactEmail.includes("@") || contactPhone.length < 2) return json({ error: "Enter valid primary lead contact information." }, 400);
+
+      const match = await findChapterMatch(chapterType, organizationName, location);
+      const requestedChapterId = String(application.existing_chapter_id ?? "");
+      if (applicationKind === "join_existing" && (!match || match.id !== requestedChapterId)) {
+        return json({ error: "That matching chapter is no longer available. Search again." }, 409);
+      }
+      if (applicationKind === "new_chapter" && match && application.create_separate !== true) {
+        return json({ match, requires_choice: true });
+      }
+
+      const additionalContacts = (Array.isArray(application.additional_contacts) ? application.additional_contacts : [])
+        .slice(0, 12)
+        .map((value) => {
+          const contact = asRecord(value);
+          return {
+            full_name: String(contact.full_name ?? "").trim().slice(0, 120),
+            email: String(contact.email ?? "").trim().toLowerCase().slice(0, 254),
+            phone: String(contact.phone ?? "").trim().slice(0, 40),
+            role: String(contact.role ?? "Volunteer").trim().slice(0, 80) || "Volunteer",
+          };
+        })
+        .filter((contact) => contact.full_name.length >= 2);
+      const payload = {
+        contact_name: contactName,
+        contact_email: contactEmail,
+        contact_phone: contactPhone,
+        organization_name: organizationName,
+        location,
+        chapter_type: chapterType,
+        application_kind: applicationKind,
+        existing_chapter_id: applicationKind === "join_existing" ? match!.id : null,
+        student_reach: String(application.student_reach ?? "").trim().slice(0, 120) || null,
+        why: String(application.why ?? "").trim().slice(0, 5000) || null,
+        additional_contacts: additionalContacts,
+        submitted_by: auth.user.id,
+        status: "new",
+      };
+      const { error } = await admin.from("chapter_applications").insert(payload);
+      if (error?.code === "23505") return json({ error: "An application has already been submitted from this access session." }, 409);
+      if (error) throw error;
+      return json({ submitted: true, application_kind: applicationKind });
+    }
+
     if (action === "chapter-login") {
       const { data, error } = await auth.userClient.rpc("verify_chapter_code", { input_code: String(body.code ?? "") });
       if (error?.message.includes("RATE_LIMITED")) return json({ error: "Too many attempts. Please wait 15 minutes and try again." }, 429);
@@ -175,17 +276,17 @@ Deno.serve(async (req: Request) => {
       const report = asRecord(body.report);
       const sessionsHeld = boundedWholeNumber(report.sessions_held, 1000);
       const studentsServed = boundedWholeNumber(report.students_served, 100_000);
-      const mentorsPresent = boundedWholeNumber(report.mentors_present, 1000);
+      const instructionalHours = boundedDecimal(report.instructional_hours, 1000);
       const highlights = String(report.highlights ?? "").trim().slice(0, 4000);
       const nextWeekPlan = String(report.next_week_plan ?? "").trim().slice(0, 4000);
-      if (sessionsHeld === null || studentsServed === null || mentorsPresent === null) return json({ error: "Enter valid weekly totals." }, 400);
+      if (sessionsHeld === null || studentsServed === null || instructionalHours === null) return json({ error: "Enter valid weekly totals." }, 400);
       if (highlights.length < 2 || nextWeekPlan.length < 2) return json({ error: "Add this week’s highlights and next week’s plan." }, 400);
       const payload = {
         chapter_id: chapterId,
         week_start: String(report.week_start ?? new Date().toISOString().slice(0, 10)),
         sessions_held: sessionsHeld,
         students_served: studentsServed,
-        mentors_present: mentorsPresent,
+        instructional_hours: instructionalHours,
         completed_weekly_tasks: Boolean(report.completed_weekly_tasks),
         highlights,
         blockers: String(report.blockers ?? "").trim().slice(0, 4000),
@@ -280,10 +381,12 @@ Deno.serve(async (req: Request) => {
 
     if (action === "admin-create-chapter") {
       const chapter = asRecord(body.chapter);
+      const chapterType = String(chapter.chapter_type ?? "school");
       const payload = {
         name: String(chapter.name ?? "").trim(),
         slug: slugify(String(chapter.name ?? "")),
         location: String(chapter.location ?? "").trim(),
+        chapter_type: chapterType,
         contact_name: String(chapter.contact_name ?? "").trim(),
         contact_email: String(chapter.contact_email ?? "").trim().toLowerCase(),
         contact_phone: String(chapter.contact_phone ?? "").trim() || null,
@@ -291,6 +394,7 @@ Deno.serve(async (req: Request) => {
         advisor_email: String(chapter.advisor_email ?? "").trim().toLowerCase() || null,
         status: "active",
       };
+      if (!["city", "school"].includes(chapterType)) return json({ error: "Choose a city or school chapter." }, 400);
       if (!payload.name || !payload.location || !payload.contact_name || !payload.contact_email) return json({ error: "Name, location, lead name, and lead email are required." }, 400);
       const { data, error } = await admin.from("chapters").insert(payload).select("id, name").single();
       if (error) throw error;
@@ -309,10 +413,41 @@ Deno.serve(async (req: Request) => {
       const { data: application, error: applicationError } = await admin.from("chapter_applications").select("*").eq("id", applicationId).single();
       if (applicationError) throw applicationError;
       if (application.status === "approved") return json({ error: "This application is already approved." }, 409);
+      if (application.application_kind === "join_existing") {
+        const { data: existingChapter, error: existingChapterError } = await admin.from("chapters")
+          .select("id, name")
+          .eq("id", application.existing_chapter_id)
+          .eq("status", "active")
+          .maybeSingle();
+        if (existingChapterError) throw existingChapterError;
+        if (!existingChapter) return json({ error: "The chapter selected by this join request is no longer active." }, 409);
+        const additionalContacts = Array.isArray(application.additional_contacts) ? application.additional_contacts : [];
+        const volunteerRows = [{
+          chapter_id: existingChapter.id,
+          full_name: application.contact_name,
+          email: String(application.contact_email).toLowerCase(),
+          phone: application.contact_phone || null,
+          role: "Volunteer",
+          status: "active",
+        }, ...additionalContacts.slice(0, 12).map((contact: Record<string, unknown>) => ({
+          chapter_id: existingChapter.id,
+          full_name: String(contact.full_name ?? contact.name ?? "").trim().slice(0, 120),
+          email: String(contact.email ?? "").trim().toLowerCase().slice(0, 254) || null,
+          phone: String(contact.phone ?? "").trim().slice(0, 40) || null,
+          role: String(contact.role ?? "Volunteer").trim().slice(0, 80) || "Volunteer",
+          status: "active",
+        }))].filter((contact) => String(contact.full_name).trim().length >= 2);
+        const { error: volunteerError } = await admin.from("chapter_volunteers").insert(volunteerRows);
+        if (volunteerError) throw volunteerError;
+        const { error: approvalError } = await admin.from("chapter_applications").update({ status: "approved", updated_at: new Date().toISOString() }).eq("id", applicationId);
+        if (approvalError) throw approvalError;
+        return json({ chapter: existingChapter, joined: true, overview: await adminOverview() });
+      }
       const { data: chapter, error: chapterError } = await admin.from("chapters").insert({
         name: application.organization_name,
         slug: slugify(application.organization_name),
         location: application.location,
+        chapter_type: application.chapter_type ?? "school",
         contact_name: application.contact_name,
         contact_email: String(application.contact_email).toLowerCase(),
         contact_phone: application.contact_phone || null,

@@ -65,7 +65,7 @@ create table if not exists public.weekly_reports (
   week_start date not null,
   sessions_held integer not null default 0 check (sessions_held >= 0),
   students_served integer not null default 0 check (students_served >= 0),
-  mentors_present integer not null default 0 check (mentors_present >= 0),
+  instructional_hours numeric(7, 2) not null default 0 check (instructional_hours >= 0 and instructional_hours <= 1000),
   completed_weekly_tasks boolean not null default false,
   highlights text,
   blockers text,
