@@ -61,13 +61,14 @@ async function currentChapterId(userClient: SupabaseClient) {
 
 async function getChapterDashboard(chapterId: string) {
   const now = new Date().toISOString();
-  const [chapterResult, tasksResult, eventsResult, reportsResult] = await Promise.all([
+  const [chapterResult, tasksResult, eventsResult, reportsResult, volunteersResult] = await Promise.all([
     admin.from("chapters").select("id, name, location, contact_name, contact_email, status").eq("id", chapterId).single(),
     admin.from("tasks").select("id, title, description, due_date, priority, status, completed_at").eq("assigned_chapter_id", chapterId).neq("status", "archived").order("due_date", { ascending: true, nullsFirst: false }),
     admin.from("events").select("id, title, description, starts_at, ends_at, location, link, chapter_id").or(`chapter_id.is.null,chapter_id.eq.${chapterId}`).gte("starts_at", now).order("starts_at", { ascending: true }).limit(10),
     admin.from("weekly_reports").select("id, week_start, sessions_held, students_served, mentors_present, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").eq("chapter_id", chapterId).order("week_start", { ascending: false }).limit(8),
+    admin.from("chapter_volunteers").select("id, full_name, email, phone, role, joined_on, status, notes, created_at, updated_at").eq("chapter_id", chapterId).order("status").order("full_name"),
   ]);
-  const firstError = [chapterResult.error, tasksResult.error, eventsResult.error, reportsResult.error].find(Boolean);
+  const firstError = [chapterResult.error, tasksResult.error, eventsResult.error, reportsResult.error, volunteersResult.error].find(Boolean);
   if (firstError) throw firstError;
   const reports = reportsResult.data ?? [];
   let safeReviews: Array<{ report_id: string; status: string; public_feedback: string | null; reviewed_at: string | null }> = [];
@@ -88,21 +89,22 @@ async function getChapterDashboard(chapterId: string) {
       reviewed_at: review?.reviewed_at ?? null,
     };
   });
-  return { chapter: chapterResult.data, tasks: tasksResult.data ?? [], events: eventsResult.data ?? [], reports: chapterReports };
+  return { chapter: chapterResult.data, tasks: tasksResult.data ?? [], events: eventsResult.data ?? [], reports: chapterReports, volunteers: volunteersResult.data ?? [] };
 }
 
 async function adminOverview() {
-  const [applications, chapters, reports, reviews, tasks, events] = await Promise.all([
-    admin.from("chapter_applications").select("id, contact_name, contact_email, contact_phone, organization_name, location, student_reach, why, status, internal_notes, created_at").order("created_at", { ascending: false }),
+  const [applications, chapters, reports, reviews, tasks, events, volunteers] = await Promise.all([
+    admin.from("chapter_applications").select("id, contact_name, contact_email, contact_phone, additional_contacts, organization_name, location, student_reach, why, status, internal_notes, created_at").order("created_at", { ascending: false }),
     admin.from("chapters").select("id, name, slug, location, contact_name, contact_email, contact_phone, advisor_name, advisor_email, status, access_code_hint, created_at").order("name"),
     admin.from("weekly_reports").select("id, chapter_id, week_start, sessions_held, students_served, mentors_present, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").order("week_start", { ascending: false }).limit(200),
     admin.from("weekly_report_reviews").select("report_id, status, rating, private_notes, public_feedback, reviewed_at, reviewed_by, updated_at").order("updated_at", { ascending: false }).limit(200),
     admin.from("tasks").select("id, title, description, assigned_chapter_id, due_date, priority, status, completed_at, created_at").order("created_at", { ascending: false }).limit(200),
     admin.from("events").select("id, title, description, starts_at, ends_at, location, link, chapter_id, created_at").order("starts_at", { ascending: true }).limit(100),
+    admin.from("chapter_volunteers").select("id, chapter_id, full_name, email, phone, role, joined_on, status, notes, created_at, updated_at").order("created_at", { ascending: false }).limit(500),
   ]);
-  const firstError = [applications.error, chapters.error, reports.error, reviews.error, tasks.error, events.error].find(Boolean);
+  const firstError = [applications.error, chapters.error, reports.error, reviews.error, tasks.error, events.error, volunteers.error].find(Boolean);
   if (firstError) throw firstError;
-  return { applications: applications.data ?? [], chapters: chapters.data ?? [], reports: reports.data ?? [], reviews: reviews.data ?? [], tasks: tasks.data ?? [], events: events.data ?? [] };
+  return { applications: applications.data ?? [], chapters: chapters.data ?? [], reports: reports.data ?? [], reviews: reviews.data ?? [], tasks: tasks.data ?? [], events: events.data ?? [], volunteers: volunteers.data ?? [] };
 }
 
 async function provisionUniqueChapterCode(chapterId: string, requestedCode?: unknown) {
@@ -194,6 +196,38 @@ Deno.serve(async (req: Request) => {
       return json({ dashboard: await getChapterDashboard(chapterId) });
     }
 
+    if (action === "chapter-add-volunteer") {
+      const chapterId = await currentChapterId(auth.userClient);
+      if (!chapterId) return json({ error: "Your access session has expired. Enter your access code again." }, 401);
+      const volunteer = body.volunteer ?? {};
+      const payload = {
+        chapter_id: chapterId,
+        full_name: String(volunteer.full_name ?? "").trim().slice(0, 120),
+        email: String(volunteer.email ?? "").trim().toLowerCase().slice(0, 254) || null,
+        phone: String(volunteer.phone ?? "").trim().slice(0, 40) || null,
+        role: String(volunteer.role ?? "Volunteer").trim().slice(0, 80) || "Volunteer",
+        joined_on: String(volunteer.joined_on ?? new Date().toISOString().slice(0, 10)),
+        notes: String(volunteer.notes ?? "").trim().slice(0, 2000) || null,
+        status: "active",
+        created_by: auth.user.id,
+      };
+      if (payload.full_name.length < 2) return json({ error: "Enter the volunteer’s full name." }, 400);
+      if (payload.email && !payload.email.includes("@")) return json({ error: "Enter a valid volunteer email." }, 400);
+      const { error } = await admin.from("chapter_volunteers").insert(payload);
+      if (error) throw error;
+      return json({ dashboard: await getChapterDashboard(chapterId) });
+    }
+
+    if (action === "chapter-update-volunteer") {
+      const chapterId = await currentChapterId(auth.userClient);
+      if (!chapterId) return json({ error: "Your access session has expired. Enter your access code again." }, 401);
+      const status = String(body.status ?? "");
+      if (!["active", "inactive"].includes(status)) return json({ error: "Choose a valid volunteer status." }, 400);
+      const { error } = await admin.from("chapter_volunteers").update({ status, updated_at: new Date().toISOString() }).eq("id", String(body.volunteer_id ?? "")).eq("chapter_id", chapterId);
+      if (error) throw error;
+      return json({ dashboard: await getChapterDashboard(chapterId) });
+    }
+
     if (action === "chapter-logout") {
       await auth.userClient.rpc("clear_chapter_session");
       return json({ ok: true });
@@ -258,6 +292,22 @@ Deno.serve(async (req: Request) => {
         await admin.from("chapters").delete().eq("id", chapter.id);
         throw approvalError;
       }
+      const additionalContacts = Array.isArray(application.additional_contacts) ? application.additional_contacts : [];
+      const volunteerRows = additionalContacts
+        .slice(0, 12)
+        .map((contact: Record<string, unknown>) => ({
+          chapter_id: chapter.id,
+          full_name: String(contact.full_name ?? contact.name ?? "").trim().slice(0, 120),
+          email: String(contact.email ?? "").trim().toLowerCase().slice(0, 254) || null,
+          phone: String(contact.phone ?? "").trim().slice(0, 40) || null,
+          role: String(contact.role ?? "Volunteer").trim().slice(0, 80) || "Volunteer",
+          status: "active",
+        }))
+        .filter((contact: { full_name: string }) => contact.full_name.length >= 2);
+      if (volunteerRows.length) {
+        const { error: volunteerError } = await admin.from("chapter_volunteers").insert(volunteerRows);
+        if (volunteerError) throw volunteerError;
+      }
       return json({ chapter, code, overview: await adminOverview() });
     }
 
@@ -302,7 +352,7 @@ Deno.serve(async (req: Request) => {
 
     if (action === "admin-assign-task") {
       const task = body.task ?? {};
-      const { error } = await admin.from("tasks").insert({ title: String(task.title ?? "").trim(), description: String(task.description ?? "").trim() || null, assigned_chapter_id: String(task.chapter_id ?? ""), due_date: task.due_date || null, priority: task.priority === "high" ? "high" : "normal", status: "open", created_by: auth.user.id });
+      const { error } = await admin.from("tasks").insert({ title: String(task.title ?? "").trim(), description: String(task.description ?? "").trim() || null, assigned_chapter_id: String(task.chapter_id ?? ""), due_date: task.due_date || null, priority: "high", status: "open", created_by: auth.user.id });
       if (error) throw error;
       return json(await adminOverview());
     }

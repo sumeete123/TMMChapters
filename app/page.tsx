@@ -32,6 +32,20 @@ type Task = {
   completed_at?: string | null;
 };
 
+type Volunteer = {
+  id: string;
+  chapter_id?: string;
+  full_name: string;
+  email?: string | null;
+  phone?: string | null;
+  role: string;
+  joined_on: string;
+  status: "active" | "inactive";
+  notes?: string | null;
+  created_at: string;
+  updated_at?: string;
+};
+
 type ChapterEvent = {
   id: string;
   title: string;
@@ -77,6 +91,7 @@ type Application = {
   contact_name: string;
   contact_email: string;
   contact_phone?: string | null;
+  additional_contacts?: Array<{ full_name: string; email?: string; phone?: string; role?: string }>;
   organization_name: string;
   location: string;
   student_reach?: string | null;
@@ -85,11 +100,11 @@ type Application = {
   created_at: string;
 };
 
-type ChapterDashboardData = { chapter: Chapter; tasks: Task[]; events: ChapterEvent[]; reports: Report[] };
-type AdminData = { applications: Application[]; chapters: Chapter[]; reports: Report[]; reviews: ReportReview[]; tasks: Task[]; events: ChapterEvent[] };
+type ChapterDashboardData = { chapter: Chapter; tasks: Task[]; events: ChapterEvent[]; reports: Report[]; volunteers: Volunteer[] };
+type AdminData = { applications: Application[]; chapters: Chapter[]; reports: Report[]; reviews: ReportReview[]; tasks: Task[]; events: ChapterEvent[]; volunteers: Volunteer[] };
 type AdminActionResult = Partial<AdminData> & { code?: string; chapter?: Chapter; overview?: AdminData };
 
-const emptyAdmin: AdminData = { applications: [], chapters: [], reports: [], reviews: [], tasks: [], events: [] };
+const emptyAdmin: AdminData = { applications: [], chapters: [], reports: [], reviews: [], tasks: [], events: [], volunteers: [] };
 const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? "";
 
 declare global {
@@ -366,6 +381,12 @@ export default function Page() {
       location: String(form.get("location") ?? ""),
       student_reach: String(form.get("student_reach") ?? ""),
       why: String(form.get("why") ?? ""),
+      additional_contacts: form.getAll("additional_name").map((name, index) => ({
+        full_name: String(name).trim(),
+        email: String(form.getAll("additional_email")[index] ?? "").trim(),
+        phone: String(form.getAll("additional_phone")[index] ?? "").trim(),
+        role: String(form.getAll("additional_role")[index] ?? "Volunteer").trim(),
+      })).filter((contact) => contact.full_name.length >= 2),
     };
     try {
       const { error } = await supabase.from("chapter_applications").insert(payload);
@@ -409,6 +430,30 @@ export default function Page() {
       const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-toggle-task", { task_id: task.id, complete: task.status !== "complete" });
       setDashboard(result.dashboard);
     } catch (error) { setMessage(accessError(error)); }
+    finally { setBusy(false); }
+  };
+
+  const addVolunteer = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    setBusy(true);
+    try {
+      const form = new FormData(formElement);
+      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-add-volunteer", { volunteer: Object.fromEntries(form) });
+      setDashboard(result.dashboard);
+      formElement.reset();
+      setMessage("Volunteer added.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "The volunteer could not be added."); }
+    finally { setBusy(false); }
+  };
+
+  const updateVolunteer = async (volunteer: Volunteer) => {
+    setBusy(true);
+    try {
+      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-update-volunteer", { volunteer_id: volunteer.id, status: volunteer.status === "active" ? "inactive" : "active" });
+      setDashboard(result.dashboard);
+      setMessage(volunteer.status === "active" ? "Volunteer marked inactive." : "Volunteer reactivated.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "The volunteer could not be updated."); }
     finally { setBusy(false); }
   };
 
@@ -472,7 +517,7 @@ export default function Page() {
 
     {view === "access" && <AccessView onLogin={chapterLogin} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} goTo={goTo} />}
     {view === "apply" && <ApplicationView onSubmit={submitApplication} busy={busy} />}
-    {view === "chapter" && dashboard && <ChapterView data={dashboard} onReport={submitReport} onToggleTask={toggleTask} onLogout={chapterLogout} busy={busy} />}
+    {view === "chapter" && dashboard && <ChapterView data={dashboard} onReport={submitReport} onToggleTask={toggleTask} onAddVolunteer={addVolunteer} onUpdateVolunteer={updateVolunteer} onLogout={chapterLogout} busy={busy} />}
     {view === "admin" && <AdminView data={adminData} ready={adminReady} tab={adminTab} setTab={setAdminTab} onLogin={adminLogin} onAction={adminAction} onLogout={adminLogout} issuedCode={issuedCode} setIssuedCode={setIssuedCode} onCaptcha={setCaptchaToken} busy={busy} />}
   </main>;
 }
@@ -494,28 +539,31 @@ function AccessView({ onLogin, busy, authState, authMessage, onCaptcha, goTo }: 
 }
 
 function ApplicationView({ onSubmit, busy }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; busy: boolean }) {
+  const [additionalPeople, setAdditionalPeople] = useState<string[]>([]);
   return <section className="form-page">
-    <div className="page-heading"><span className="tiny-label">Chapter application</span><h1>Start a chapter</h1><p>Tell us who will lead it and where it will operate. We’ll review the application before issuing a chapter code.</p></div>
+    <div className="page-heading"><span className="tiny-label">Chapter application</span><h1>Start a chapter</h1><p>Add the primary lead and anyone else who will help run the chapter. We’ll keep the full team together when the chapter is approved.</p></div>
     <form className="surface-form" onSubmit={onSubmit}>
       <div className="form-grid">
-        <Field label="Lead name"><input name="contact_name" required /></Field>
-        <Field label="Lead email"><input name="contact_email" type="email" required /></Field>
-        <Field label="Phone"><input name="contact_phone" type="tel" required /></Field>
+        <Field label="Primary lead name"><input name="contact_name" required /></Field>
+        <Field label="Primary lead email"><input name="contact_email" type="email" required /></Field>
+        <Field label="Primary lead phone"><input name="contact_phone" type="tel" required /></Field>
         <Field label="School or organization"><input name="organization_name" required /></Field>
         <Field label="City and state"><input name="location" placeholder="Raleigh, NC" required /></Field>
         <Field label="Students you plan to serve"><select name="student_reach" required defaultValue=""><option value="" disabled>Select one</option><option>K–5</option><option>Middle school</option><option>K–8</option><option>Competition math</option></select></Field>
       </div>
+      <section className="people-builder"><div className="people-builder-heading"><div><h2>Additional team members</h2><p>Add co-leads, officers, or volunteers who are joining with the primary lead.</p></div><Button type="button" kind="secondary" onClick={() => setAdditionalPeople((people) => [...people, crypto.randomUUID()])}>Add another person</Button></div>{additionalPeople.length ? <div className="people-stack">{additionalPeople.map((person, index) => <div className="person-row" key={person}><div className="person-row-heading"><strong>Person {index + 2}</strong><button type="button" onClick={() => setAdditionalPeople((people) => people.filter((id) => id !== person))}>Remove</button></div><div className="form-grid four"><Field label="Full name"><input name="additional_name" required /></Field><Field label="Email"><input name="additional_email" type="email" /></Field><Field label="Phone"><input name="additional_phone" type="tel" /></Field><Field label="Role"><input name="additional_role" placeholder="Co-lead, volunteer…" defaultValue="Volunteer" /></Field></div></div>)}</div> : <p className="people-empty">Only one person? You can continue without adding anyone else.</p>}</section>
       <Field label="Why do you want to start this chapter?"><textarea name="why" rows={5} required /></Field>
       <div className="form-footer"><p>Applications are reviewed manually. Approved chapters receive a private access code.</p><Button type="submit" disabled={busy}>{busy ? "Sending…" : "Send application"}</Button></div>
     </form>
   </section>;
 }
 
-function ChapterView({ data, onReport, onToggleTask, onLogout, busy }: { data: ChapterDashboardData; onReport: (event: FormEvent<HTMLFormElement>) => void; onToggleTask: (task: Task) => void; onLogout: () => void; busy: boolean }) {
+function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVolunteer, onLogout, busy }: { data: ChapterDashboardData; onReport: (event: FormEvent<HTMLFormElement>) => void; onToggleTask: (task: Task) => void; onAddVolunteer: (event: FormEvent<HTMLFormElement>) => void; onUpdateVolunteer: (volunteer: Volunteer) => void; onLogout: () => void; busy: boolean }) {
   const latest = data.reports[0];
   const current = data.reports.find((report) => report.week_start === thisMonday());
   const due = weekDueDate();
   const openTasks = orderedOpenTasks(data.tasks);
+  const activeVolunteers = data.volunteers.filter((volunteer) => volunteer.status === "active");
   const nextEvent = [...data.events].sort((a, b) => a.starts_at.localeCompare(b.starts_at))[0];
   const notifications: { tone: string; label: string; title: string; detail: string; href: string }[] = [];
   notifications.push(current
@@ -533,7 +581,7 @@ function ChapterView({ data, onReport, onToggleTask, onLogout, busy }: { data: C
   return <section className="workspace">
     <aside className="sidebar">
       <div><span className="tiny-label">Current chapter</span><h2>{data.chapter.name}</h2><p>{data.chapter.location}</p></div>
-      <nav><a href="#home">Home</a><a href="#notifications">Notifications <b>{notifications.length}</b></a><a href="#tasks">Assignments {openTasks.length > 0 && <b>{openTasks.length}</b>}</a><a href="#events">Calendar</a><a href="#history">Report history</a><a href="#weekly">Weekly report</a></nav>
+      <nav><a href="#home">Home</a><a href="#notifications">Notifications <b>{notifications.length}</b></a><a href="#tasks">Assignments {openTasks.length > 0 && <b>{openTasks.length}</b>}</a><a href="#events">Calendar</a><a href="#volunteers">Volunteers <b>{activeVolunteers.length}</b></a><a href="#history">Report history</a><a href="#weekly">Weekly report</a></nav>
       <button className="sidebar-action" onClick={onLogout}>Sign out chapter</button>
     </aside>
     <div className="workspace-content" id="home">
@@ -545,10 +593,11 @@ function ChapterView({ data, onReport, onToggleTask, onLogout, busy }: { data: C
         <div className="priority-assignments"><div className="priority-list-heading"><span>Assigned to your chapter</span><b>{openTasks.length} open</b></div>{openTasks.length ? openTasks.slice(0, 3).map((task) => <a href="#tasks" className="priority-task" key={task.id}><span className={`priority-dot ${task.priority === "high" ? "high" : ""}`} /><span><strong>{task.title}</strong><small>{task.due_date ? `Due ${new Date(`${task.due_date}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : "No due date"}{task.priority === "high" ? " · High priority" : ""}</small></span></a>) : <p className="priority-clear">No open assignments. You’re all caught up.</p>}<a className="text-link" href="#tasks">View all assignments →</a></div>
       </section>
 
-      <div className="metric-strip">
+      <div className="metric-strip chapter-metrics">
         <div><span>Weekly check-in</span><strong>{current ? "Submitted" : "Due Sunday"}</strong><small>{longDate(due)}</small></div>
         <div><span>TMM review</span><strong>{current ? reviewLabel(current.review_status) : "Starts after submission"}</strong><small>Private ratings stay with TMM</small></div>
         <div><span>Assignments</span><strong>{openTasks.length} open</strong><small>{data.tasks.length - openTasks.length} completed</small></div>
+        <div><span>Volunteer team</span><strong>{activeVolunteers.length} active</strong><small>{data.volunteers.length} total people</small></div>
       </div>
 
       <section className="work-section notification-center" id="notifications">
@@ -562,6 +611,11 @@ function ChapterView({ data, onReport, onToggleTask, onLogout, busy }: { data: C
         <section className="work-section assignments-section" id="tasks"><div className="section-title"><div><span className="section-kicker">Action required</span><h2>Assignments</h2><p>High-priority and nearest-due work appears first. Check an item when it is finished.</p></div><span className="notification-count">{openTasks.length} open</span></div><div className="item-list">{data.tasks.length ? [...data.tasks].sort((a, b) => Number(a.status === "complete") - Number(b.status === "complete") || Number(b.priority === "high") - Number(a.priority === "high") || (a.due_date ?? "9999-12-31").localeCompare(b.due_date ?? "9999-12-31")).map((task) => <button className={`task-item ${task.status === "complete" ? "complete" : ""}`} onClick={() => onToggleTask(task)} key={task.id} disabled={busy}><span className="check-box">{task.status === "complete" ? "✓" : ""}</span><span><span className="task-title-line"><strong>{task.title}</strong>{task.priority === "high" && <em>High priority</em>}</span>{task.description && <p>{task.description}</p>}<small>{task.due_date ? `Due ${new Date(`${task.due_date}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}` : "No due date"}</small></span></button>) : <Empty text="No assignments right now. New work from TMM will appear here and in Notifications." />}</div></section>
         <section className="work-section" id="events"><div className="section-title"><div><span className="section-kicker">Plan ahead</span><h2>Upcoming events</h2><p>Shared events and dates created for your chapter.</p></div></div><div className="item-list">{data.events.length ? data.events.map((event) => <div className="event-item" key={event.id}><time>{new Date(event.starts_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time><span><strong>{event.title}</strong><small>{new Date(event.starts_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}{event.location ? ` · ${event.location}` : ""}</small>{event.description && <p>{event.description}</p>}{event.link && <a className="text-link" href={event.link} target="_blank" rel="noreferrer">Open event link →</a>}</span></div>) : <Empty text="No upcoming events. New dates will also appear in Notifications." />}</div></section>
       </div>
+      <section className="work-section volunteer-section" id="volunteers">
+        <div className="section-title"><div><span className="section-kicker">People directory</span><h2>Chapter volunteers</h2><p>Track everyone helping your chapter, including leads, officers, mentors, and volunteers.</p></div><span className="notification-count">{activeVolunteers.length} active</span></div>
+        {data.volunteers.length ? <div className="volunteer-list">{[...data.volunteers].sort((a, b) => Number(a.status === "inactive") - Number(b.status === "inactive") || a.full_name.localeCompare(b.full_name)).map((volunteer) => <article className={`volunteer-row ${volunteer.status}`} key={volunteer.id}><span className="volunteer-avatar" aria-hidden="true">{volunteer.full_name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase()}</span><div><strong>{volunteer.full_name}</strong><small>{volunteer.role} · Joined {new Date(`${volunteer.joined_on}T12:00:00`).toLocaleDateString()}</small></div><div className="volunteer-contact">{volunteer.email ? <a href={`mailto:${volunteer.email}`}>{volunteer.email}</a> : <span>No email</span>}{volunteer.phone && <span>{volunteer.phone}</span>}</div><div className="volunteer-actions"><Status value={volunteer.status} /><Button kind="quiet" disabled={busy} onClick={() => onUpdateVolunteer(volunteer)}>{volunteer.status === "active" ? "Mark inactive" : "Reactivate"}</Button></div></article>)}</div> : <Empty text="No volunteers have been added yet. Use the form below to start the chapter directory." />}
+        <div className="inline-form-zone"><div><span className="section-kicker">Add someone</span><h3>New volunteer</h3><p>Add each new person as they join so TMM can track chapter growth.</p></div><form className="volunteer-form" onSubmit={onAddVolunteer}><div className="form-grid four"><Field label="Full name"><input name="full_name" required /></Field><Field label="Email"><input name="email" type="email" /></Field><Field label="Phone"><input name="phone" type="tel" /></Field><Field label="Role"><input name="role" defaultValue="Volunteer" placeholder="Volunteer, mentor…" required /></Field></div><div className="form-grid"><Field label="Joined on"><input name="joined_on" type="date" defaultValue={new Date().toISOString().slice(0, 10)} required /></Field><Field label="Notes"><input name="notes" placeholder="Optional skills, availability, or context" /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Add volunteer"}</Button></div></form></div>
+      </section>
       <section className="work-section" id="history"><div className="section-title"><div><span className="section-kicker">Your record</span><h2>Report history</h2><p>Submission and review status for recent weeks. Private TMM ratings are never shown here.</p></div></div>{data.reports.length ? <div className="simple-table five"><div className="table-head"><span>Week</span><span>Sessions</span><span>Students</span><span>Tasks done</span><span>Status</span></div>{data.reports.map((report) => <div className="table-row" key={report.id}><span>{new Date(`${report.week_start}T12:00:00`).toLocaleDateString()}</span><span>{report.sessions_held}</span><span>{report.students_served}</span><span>{report.completed_weekly_tasks ? "Yes" : "No"}</span><span>{reviewLabel(report.review_status)}</span></div>)}</div> : <Empty text="No weekly reports yet. Your first report will appear here after you submit it." />}</section>
 
       <section className="work-section weekly-section form-zone" id="weekly">
@@ -597,6 +651,17 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
   });
   const adminAttention = pending + reviewQueue.length + followUps + missingReports.length;
   const openAdminTasks = orderedOpenTasks(data.tasks);
+  const chapterScores = data.chapters.map((chapter) => {
+    const ratings = data.reports
+      .filter((report) => report.chapter_id === chapter.id)
+      .map((report) => reviewByReport.get(report.id)?.rating)
+      .filter((rating): rating is number => typeof rating === "number");
+    return { chapter, average: ratings.length ? ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length : null, reviews: ratings.length };
+  }).filter((item) => item.average !== null);
+  const bestRated = [...chapterScores].sort((a, b) => (b.average ?? 0) - (a.average ?? 0)).slice(0, 3);
+  const needsSupport = [...chapterScores].sort((a, b) => (a.average ?? 0) - (b.average ?? 0)).slice(0, 3);
+  const mostEvents = data.chapters.map((chapter) => ({ chapter, count: data.events.filter((event) => event.chapter_id === chapter.id).length })).sort((a, b) => b.count - a.count).slice(0, 3);
+  const pendingApplications = data.applications.filter((application) => application.status === "new" || application.status === "reviewing");
   if (!ready) return <section className="access-shell"><div className="access-card"><div className="card-heading"><span className="tiny-label">Admin access</span><h1>Enter admin code</h1><p>Use the secure 6-digit administrator access code.</p></div><form className="stack-form" onSubmit={onLogin}><Field label="6-digit admin code"><input className="code-input" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" minLength={6} maxLength={6} placeholder="••••••" required /></Field>{turnstileSiteKey && <TurnstileChallenge onToken={onCaptcha} />}<Button type="submit" disabled={busy}>{busy ? "Checking…" : "Open admin dashboard"}</Button></form></div></section>;
 
   const submitChapter = (event: FormEvent<HTMLFormElement>) => {
@@ -638,33 +703,22 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
       {issuedCode && <div className="code-result"><div><span className="tiny-label">New chapter code · shown once</span><strong>{issuedCode.name}</strong><code>{issuedCode.code}</code></div><div><Button kind="secondary" onClick={() => navigator.clipboard.writeText(issuedCode.code)}>Copy code</Button><Button kind="quiet" onClick={() => setIssuedCode(null)}>Dismiss</Button></div></div>}
 
       {tab === "overview" && <>
-        <section className="priority-board admin-priority" aria-label="Admin priorities">
-          <div className="sunday-signal"><span>Chapter reports</span><strong>SUN</strong><time>{weekDueDate().toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time></div>
-          <div className="priority-copy"><span className="priority-eyebrow">{dueTiming(weekDueDate())}</span><h2>Weekly reports are due every Sunday.</h2><p>{currentWeekReportChapters.size} of {data.chapters.filter((chapter) => chapter.status === "active").length} active chapters have checked in. Missing reports stay visible here until submitted.</p><Button onClick={() => setTab("reviews")}>Open weekly reviews</Button></div>
-          <div className="priority-assignments"><div className="priority-list-heading"><span>Needs your attention</span><b>{adminAttention} items</b></div><button className="priority-task" onClick={() => setTab("reviews")}><span className="priority-dot high" /><span><strong>{missingReports.length} missing weekly reports</strong><small>Due {longDate(weekDueDate())}</small></span></button><button className="priority-task" onClick={() => setTab("reviews")}><span className="priority-dot" /><span><strong>{reviewQueue.length} reports awaiting review</strong><small>Rate and add team feedback</small></span></button><button className="priority-task" onClick={() => setTab("applications")}><span className="priority-dot" /><span><strong>{pending} applications waiting</strong><small>Approve, review, or decline</small></span></button></div>
-        </section>
-        <div className="metric-strip admin-metrics">
-          <div><span>Active chapters</span><strong>{data.chapters.filter((chapter) => chapter.status === "active").length}</strong><small>{data.chapters.length} total chapters</small></div>
-          <div><span>Submitted this week</span><strong>{currentWeekReportChapters.size}</strong><small>Reports due Sunday</small></div>
-          <div><span>Awaiting review</span><strong>{reviewQueue.length}</strong><small>Private ratings to complete</small></div>
-          <div><span>Open assignments</span><strong>{openAdminTasks.length}</strong><small>Across all chapters</small></div>
+        <div className="admin-deadline-line"><span>Weekly reports are due every Sunday</span><strong>{currentWeekReportChapters.size}/{data.chapters.filter((chapter) => chapter.status === "active").length} submitted</strong><small>{longDate(weekDueDate())} · {dueTiming(weekDueDate())}</small></div>
+        <div className="admin-focus-grid">
+          <button className={missingReports.length ? "urgent" : "clear"} onClick={() => setTab("reviews")}><span>Missing reports</span><strong>{missingReports.length}</strong><small>Due Sunday</small></button>
+          <button onClick={() => setTab("reviews")}><span>Awaiting review</span><strong>{reviewQueue.length}</strong><small>{followUps} need follow-up</small></button>
+          <button onClick={() => setTab("applications")}><span>Applications</span><strong>{pending}</strong><small>Need a decision</small></button>
+          <button onClick={() => setTab("chapters")}><span>Active volunteers</span><strong>{data.volunteers.filter((volunteer) => volunteer.status === "active").length}</strong><small>Across {data.chapters.length} chapters</small></button>
         </div>
-        <section className="admin-section notification-center">
-          <div className="section-title"><div><span className="section-kicker">Operations inbox</span><h2>Notifications</h2><p>A second, scannable place for every item that needs follow-through.</p></div><span className="notification-count">{adminAttention} active</span></div>
-          <div className="notification-list admin-notifications">
-            <button className={`notification-item ${missingReports.length ? "urgent" : "success"}`} onClick={() => setTab("reviews")}><span className="notification-indicator" /><span><small>Sunday reporting</small><strong>{missingReports.length ? `${missingReports.length} chapters have not submitted` : "Every active chapter has submitted"}</strong><p>{missingReports.length ? `Reports are due ${longDate(weekDueDate())}.` : "This week’s reporting is complete."}</p></span><b>→</b></button>
-            <button className="notification-item info" onClick={() => setTab("reviews")}><span className="notification-indicator" /><span><small>Review queue</small><strong>{reviewQueue.length} reports need a private rating</strong><p>{followUps} reports are marked for follow-up.</p></span><b>→</b></button>
-            <button className="notification-item neutral" onClick={() => setTab("applications")}><span className="notification-indicator" /><span><small>Applications</small><strong>{pending} applications need a decision</strong><p>Approved chapters receive a secure code.</p></span><b>→</b></button>
-            <button className="notification-item neutral" onClick={() => setTab("work")}><span className="notification-indicator" /><span><small>Chapter work</small><strong>{openAdminTasks.length} assignments remain open</strong><p>Assign new work and manage the chapter calendar.</p></span><b>→</b></button>
-          </div>
-        </section>
-        <div className="admin-two-column">
-          <section className="admin-section"><div className="section-title"><div><span className="section-kicker">Due this week</span><h2>Missing reports</h2><p>Active chapters that still need to check in by Sunday.</p></div><Button kind="quiet" onClick={() => setTab("reviews")}>View reviews</Button></div>{missingReports.length ? <div className="missing-list">{missingReports.slice(0, 6).map((chapter) => <div key={chapter.id}><span><strong>{chapter.name}</strong><small>{chapter.contact_name} · {chapter.contact_email}</small></span><Status value="missing" /></div>)}</div> : <Empty text="Every active chapter has submitted this week." />}</section>
-          <section className="admin-section"><div className="section-title"><div><span className="section-kicker">Recently assigned</span><h2>Open chapter work</h2><p>Highest-priority assignments across the network.</p></div><Button kind="quiet" onClick={() => setTab("work")}>Manage work</Button></div>{openAdminTasks.length ? <div className="admin-item-list home-list">{openAdminTasks.slice(0, 6).map((task) => <div key={task.id}><span><strong>{task.title}</strong><small>{data.chapters.find((chapter) => chapter.id === task.assigned_chapter_id)?.name ?? "Chapter"}{task.due_date ? ` · Due ${new Date(`${task.due_date}T12:00:00`).toLocaleDateString()}` : ""}</small></span><Status value={task.priority === "high" ? "high" : task.status} /></div>)}</div> : <Empty text="No open assignments across the chapter network." />}</section>
+        <div className="admin-ranking-grid">
+          <section className="ranking-card best"><div className="ranking-heading"><span>Performance</span><h2>Best rated chapters</h2></div>{bestRated.length ? <div className="ranking-list">{bestRated.map((item, index) => <div key={item.chapter.id}><b>{index + 1}</b><span><strong>{item.chapter.name}</strong><small>{item.reviews} reviewed report{item.reviews === 1 ? "" : "s"}</small></span><em>{item.average?.toFixed(1)}</em></div>)}</div> : <Empty text="Ratings will appear after reports are reviewed." />}</section>
+          <section className="ranking-card support"><div className="ranking-heading"><span>Coaching</span><h2>Chapters needing support</h2></div>{needsSupport.length ? <div className="ranking-list">{needsSupport.map((item, index) => <div key={item.chapter.id}><b>{index + 1}</b><span><strong>{item.chapter.name}</strong><small>{item.reviews} reviewed report{item.reviews === 1 ? "" : "s"}</small></span><em>{item.average?.toFixed(1)}</em></div>)}</div> : <Empty text="Ratings will appear after reports are reviewed." />}</section>
+          <section className="ranking-card"><div className="ranking-heading"><span>Activity</span><h2>Chapters with most events</h2></div>{mostEvents.some((item) => item.count > 0) ? <div className="ranking-list">{mostEvents.filter((item) => item.count > 0).map((item, index) => <div key={item.chapter.id}><b>{index + 1}</b><span><strong>{item.chapter.name}</strong><small>Chapter-specific events</small></span><em>{item.count}</em></div>)}</div> : <Empty text="Chapter event activity will appear here." />}</section>
+          <section className="ranking-card applications-summary"><div className="ranking-heading"><span>Intake</span><h2>Applications</h2><Button kind="quiet" onClick={() => setTab("applications")}>View all</Button></div>{pendingApplications.length ? <div className="ranking-list">{pendingApplications.slice(0, 3).map((application, index) => <div key={application.id}><b>{index + 1}</b><span><strong>{application.organization_name}</strong><small>{application.location} · {(application.additional_contacts?.length ?? 0) + 1} team member{(application.additional_contacts?.length ?? 0) === 0 ? "" : "s"}</small></span><Status value={application.status} /></div>)}</div> : <Empty text="No applications are waiting." />}</section>
         </div>
       </>}
 
-      {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Approve to create the chapter and issue its access code.</p></div></div><div className="application-list">{data.applications.length ? data.applications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>{application.contact_name}</span><a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.why && <p>{application.why}</p>}<div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & create code</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}</div></article>) : <Empty text="No applications yet." />}</div></section>}
+      {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Review the full founding team. Approval creates the chapter, volunteer records, Instagram task, and secure access code.</p></div></div><div className="application-list">{data.applications.length ? data.applications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>Primary lead: {application.contact_name}</span><a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.additional_contacts?.length ? <div className="applicant-team"><span className="section-kicker">Additional team members</span>{application.additional_contacts.map((contact, index) => <div key={`${contact.email}-${index}`}><strong>{contact.full_name}</strong><span>{contact.role || "Volunteer"}</span>{contact.email && <a href={`mailto:${contact.email}`}>{contact.email}</a>}{contact.phone && <span>{contact.phone}</span>}</div>)}</div> : null}{application.why && <p>{application.why}</p>}<div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & create code</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}</div></article>) : <Empty text="No applications yet." />}</div></section>}
 
       {tab === "reviews" && <>
         <div className="metric-strip admin-metrics">
@@ -684,7 +738,7 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
       </>}
 
       {tab === "chapters" && <>
-        <section className="admin-section"><div className="section-title"><div><span className="section-kicker">Network directory</span><h2>All chapters</h2><p>Contacts, weekly reporting status, and secure code management.</p></div></div>{data.chapters.length ? <div className="chapter-list">{data.chapters.map((chapter) => { const report = latestReport.get(chapter.id); return <article className="chapter-row" key={chapter.id}><div><strong>{chapter.name}</strong><span>{chapter.location}</span></div><div><span>{chapter.contact_name}</span><a href={`mailto:${chapter.contact_email}`}>{chapter.contact_email}</a>{chapter.contact_phone && <span>{chapter.contact_phone}</span>}</div><div><span>Latest report</span><strong className="plain-strong">{report ? new Date(`${report.week_start}T12:00:00`).toLocaleDateString() : "Not submitted"}</strong></div><div className="chapter-row-end"><Status value={chapter.status} /><span className="code-hint">Code ends •{chapter.access_code_hint ?? "—"}</span><Button kind="secondary" disabled={busy} onClick={() => onAction("admin-reset-code", { chapter_id: chapter.id }, chapter.name)}>Reset code</Button></div></article>; })}</div> : <Empty text="No chapters have been added." />}</section>
+        <section className="admin-section"><div className="section-title"><div><span className="section-kicker">Network directory</span><h2>All chapters</h2><p>Contacts, volunteers, weekly reporting status, and secure code management.</p></div></div>{data.chapters.length ? <div className="chapter-list">{data.chapters.map((chapter) => { const report = latestReport.get(chapter.id); const volunteers = data.volunteers.filter((volunteer) => volunteer.chapter_id === chapter.id && volunteer.status === "active").length; return <article className="chapter-row" key={chapter.id}><div><strong>{chapter.name}</strong><span>{chapter.location} · {volunteers} active volunteer{volunteers === 1 ? "" : "s"}</span></div><div><span>{chapter.contact_name}</span><a href={`mailto:${chapter.contact_email}`}>{chapter.contact_email}</a>{chapter.contact_phone && <span>{chapter.contact_phone}</span>}</div><div><span>Latest report</span><strong className="plain-strong">{report ? new Date(`${report.week_start}T12:00:00`).toLocaleDateString() : "Not submitted"}</strong></div><div className="chapter-row-end"><Status value={chapter.status} /><span className="code-hint">Code ends •{chapter.access_code_hint ?? "—"}</span><Button kind="secondary" disabled={busy} onClick={() => onAction("admin-reset-code", { chapter_id: chapter.id }, chapter.name)}>Reset code</Button></div></article>; })}</div> : <Empty text="No chapters have been added." />}</section>
         <section className="admin-section form-zone"><div className="section-title"><div><span className="section-kicker">Add a record</span><h2>Add a chapter manually</h2><p>This form stays below the directory. Leave the code blank to generate one securely.</p></div></div><form className="surface-form compact" onSubmit={submitChapter}><div className="form-grid three"><Field label="Chapter name"><input name="name" required /></Field><Field label="City and state"><input name="location" required /></Field><Field label="Lead name"><input name="contact_name" required /></Field><Field label="Lead email"><input name="contact_email" type="email" required /></Field><Field label="Lead phone"><input name="contact_phone" type="tel" /></Field><Field label="Custom 6-digit code" hint="Optional · exactly 6 digits"><input name="code" className="code-input small" inputMode="numeric" pattern="[0-9]{6}" minLength={6} maxLength={6} /></Field><Field label="Advisor name"><input name="advisor_name" /></Field><Field label="Advisor email"><input name="advisor_email" type="email" /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>Add chapter</Button></div></form></section>
       </>}
 
@@ -694,7 +748,7 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
           <section className="admin-section"><div className="section-title"><div><span className="section-kicker">Network calendar</span><h2>Upcoming events</h2><p>Shared dates and chapter-specific events.</p></div></div><div className="admin-item-list home-list">{data.events.length ? data.events.slice(0, 20).map((event) => <div key={event.id}><span><strong>{event.title}</strong><small>{new Date(event.starts_at).toLocaleString()}{event.location ? ` · ${event.location}` : ""}</small></span>{event.chapter_id ? <Status value="chapter" /> : <Status value="all chapters" />}</div>) : <Empty text="No upcoming events have been created." />}</div></section>
         </div>
         <div className="admin-two-column form-zone-grid">
-          <section className="admin-section form-zone"><div className="section-title"><div><span className="section-kicker">Create below</span><h2>Assign a task</h2><p>New assignments appear at the top of the selected chapter’s dashboard and in Notifications.</p></div></div><form className="surface-form compact" onSubmit={submitTask}><Field label="Task"><input name="title" required /></Field><Field label="Chapter"><select name="chapter_id" required defaultValue=""><option value="" disabled>Select a chapter</option>{data.chapters.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.name}</option>)}</select></Field><div className="form-grid"><Field label="Due date"><input name="due_date" type="date" /></Field><Field label="Priority"><select name="priority" defaultValue="normal"><option value="normal">Normal</option><option value="high">High</option></select></Field></div><Field label="Details"><textarea name="description" rows={3} /></Field><Button type="submit" disabled={busy}>Assign task</Button></form></section>
+          <section className="admin-section form-zone"><div className="section-title"><div><span className="section-kicker">Create below</span><h2>Assign a task</h2><p>Every assignment is high priority and appears at the top of the selected chapter’s dashboard.</p></div><Status value="high" /></div><form className="surface-form compact" onSubmit={submitTask}><Field label="Task"><input name="title" required /></Field><Field label="Chapter"><select name="chapter_id" required defaultValue=""><option value="" disabled>Select a chapter</option>{data.chapters.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.name}</option>)}</select></Field><Field label="Due date"><input name="due_date" type="date" /></Field><Field label="Details"><textarea name="description" rows={3} /></Field><Button type="submit" disabled={busy}>Assign high-priority task</Button></form></section>
           <section className="admin-section form-zone"><div className="section-title"><div><span className="section-kicker">Create below</span><h2>Create an event</h2><p>Leave chapter blank to share the event with every chapter.</p></div></div><form className="surface-form compact" onSubmit={submitEvent}><Field label="Event"><input name="title" required /></Field><Field label="Chapter"><select name="chapter_id" defaultValue=""><option value="">All chapters</option>{data.chapters.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.name}</option>)}</select></Field><div className="form-grid"><Field label="Starts"><input name="starts_at" type="datetime-local" required /></Field><Field label="Ends"><input name="ends_at" type="datetime-local" /></Field></div><Field label="Location"><input name="location" /></Field><Field label="Link"><input name="link" type="url" /></Field><Field label="Details"><textarea name="description" rows={3} /></Field><Button type="submit" disabled={busy}>Create event</Button></form></section>
         </div>
       </>}

@@ -29,11 +29,12 @@ test("server-renders the chapter operations homepage", async () => {
 });
 
 test("keeps the finished site free of starter-only infrastructure", async () => {
-  const [page, layout, css, edgeFunction, packageJson] = await Promise.all([
+  const [page, layout, css, edgeFunction, volunteerMigration, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../supabase/functions/chapter-portal/index.ts", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20260716004130_chapter_volunteers_and_instagram_onboarding.sql", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
@@ -45,7 +46,12 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /Weekly reports are due every Sunday/);
   assert.match(page, /Notifications/);
   assert.match(page, /Chapter command center/);
+  assert.match(page, /Chapter volunteers/);
+  assert.match(page, /Best rated chapters/);
+  assert.match(page, /additional_contacts/);
   assert.match(edgeFunction, /weekly_reports/);
+  assert.match(edgeFunction, /chapter-add-volunteer/);
+  assert.match(edgeFunction, /priority: "high"/);
   assert.match(edgeFunction, /provision_chapter_code/);
   assert.match(edgeFunction, /current_chapter_id/);
   assert.doesNotMatch(page, /signInWithPassword|tmm-chapter-session/);
@@ -53,6 +59,9 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(css, /data-theme="dark"/);
   assert.match(css, /DM Sans/);
   assert.match(css, /Space Grotesk/);
+  assert.match(volunteerMigration, /enable row level security/);
+  assert.match(volunteerMigration, /Create your chapter Instagram account/);
+  assert.match(volunteerMigration, /tasks_priority_always_high/);
   assert.doesNotMatch(css, /Cormorant Garamond/);
   assert.match(packageJson, /@supabase\/supabase-js/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
