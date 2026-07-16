@@ -47,10 +47,18 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /Notifications/);
   assert.match(page, /Chapter command center/);
   assert.match(page, /Chapter volunteers/);
+  assert.match(page, /Our impact/);
+  assert.match(page, /Students impacted/);
+  assert.match(page, /Show.*completed/);
+  assert.match(page, /Show.*closed/);
   assert.match(page, /Best rated chapters/);
   assert.match(page, /additional_contacts/);
   assert.match(edgeFunction, /weekly_reports/);
   assert.match(edgeFunction, /chapter-add-volunteer/);
+  assert.match(edgeFunction, /chapter-delete-volunteer/);
+  assert.match(edgeFunction, /admin-delete-task/);
+  assert.match(edgeFunction, /admin-delete-event/);
+  assert.match(edgeFunction, /Only declined applications can be deleted/);
   assert.match(edgeFunction, /priority: "high"/);
   assert.match(edgeFunction, /provision_chapter_code/);
   assert.match(edgeFunction, /current_chapter_id/);

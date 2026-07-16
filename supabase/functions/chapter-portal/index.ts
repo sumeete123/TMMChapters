@@ -228,6 +228,19 @@ Deno.serve(async (req: Request) => {
       return json({ dashboard: await getChapterDashboard(chapterId) });
     }
 
+    if (action === "chapter-delete-volunteer") {
+      const chapterId = await currentChapterId(auth.userClient);
+      if (!chapterId) return json({ error: "Your access session has expired. Enter your access code again." }, 401);
+      const volunteerId = String(body.volunteer_id ?? "");
+      const { data: volunteer, error: lookupError } = await admin.from("chapter_volunteers").select("id, role").eq("id", volunteerId).eq("chapter_id", chapterId).maybeSingle();
+      if (lookupError) throw lookupError;
+      if (!volunteer) return json({ error: "That volunteer could not be found." }, 404);
+      if (String(volunteer.role).toLowerCase() === "chapter lead") return json({ error: "The chapter lead cannot be deleted. Mark them inactive instead." }, 400);
+      const { error } = await admin.from("chapter_volunteers").delete().eq("id", volunteerId).eq("chapter_id", chapterId);
+      if (error) throw error;
+      return json({ dashboard: await getChapterDashboard(chapterId) });
+    }
+
     if (action === "chapter-logout") {
       await auth.userClient.rpc("clear_chapter_session");
       return json({ ok: true });
@@ -319,6 +332,17 @@ Deno.serve(async (req: Request) => {
       return json(await adminOverview());
     }
 
+    if (action === "admin-delete-application") {
+      const applicationId = String(body.application_id ?? "");
+      const { data: application, error: lookupError } = await admin.from("chapter_applications").select("id, status").eq("id", applicationId).maybeSingle();
+      if (lookupError) throw lookupError;
+      if (!application) return json({ error: "That application could not be found." }, 404);
+      if (application.status !== "declined") return json({ error: "Only declined applications can be deleted." }, 400);
+      const { error } = await admin.from("chapter_applications").delete().eq("id", applicationId).eq("status", "declined");
+      if (error) throw error;
+      return json(await adminOverview());
+    }
+
     if (action === "admin-reset-code") {
       const chapterId = String(body.chapter_id ?? "");
       const code = await provisionUniqueChapterCode(chapterId);
@@ -357,9 +381,21 @@ Deno.serve(async (req: Request) => {
       return json(await adminOverview());
     }
 
+    if (action === "admin-delete-task") {
+      const { error } = await admin.from("tasks").delete().eq("id", String(body.task_id ?? ""));
+      if (error) throw error;
+      return json(await adminOverview());
+    }
+
     if (action === "admin-create-event") {
       const event = body.event ?? {};
       const { error } = await admin.from("events").insert({ title: String(event.title ?? "").trim(), description: String(event.description ?? "").trim() || null, starts_at: event.starts_at, ends_at: event.ends_at || null, location: String(event.location ?? "").trim() || null, link: String(event.link ?? "").trim() || null, chapter_id: event.chapter_id || null, created_by: auth.user.id });
+      if (error) throw error;
+      return json(await adminOverview());
+    }
+
+    if (action === "admin-delete-event") {
+      const { error } = await admin.from("events").delete().eq("id", String(body.event_id ?? ""));
       if (error) throw error;
       return json(await adminOverview());
     }
