@@ -29,12 +29,16 @@ test("server-renders the chapter operations homepage", async () => {
 });
 
 test("keeps the finished site free of starter-only infrastructure", async () => {
-  const [page, layout, css, edgeFunction, volunteerMigration, packageJson] = await Promise.all([
+  const [page, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nextConfig, worker, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../supabase/functions/chapter-portal/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260716004130_chapter_volunteers_and_instagram_onboarding.sql", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20260716025513_harden_anonymous_application_submissions.sql", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20260716031431_limit_application_contact_payload.sql", import.meta.url), "utf8"),
+    readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
@@ -53,12 +57,16 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /Show.*closed/);
   assert.match(page, /Best rated chapters/);
   assert.match(page, /additional_contacts/);
+  assert.match(page, /Preparing secure form/);
   assert.match(edgeFunction, /weekly_reports/);
   assert.match(edgeFunction, /chapter-add-volunteer/);
   assert.match(edgeFunction, /chapter-delete-volunteer/);
   assert.match(edgeFunction, /admin-delete-task/);
   assert.match(edgeFunction, /admin-delete-event/);
   assert.match(edgeFunction, /Only declined applications can be deleted/);
+  assert.match(edgeFunction, /The request is too large/);
+  assert.match(edgeFunction, /boundedWholeNumber/);
+  assert.match(edgeFunction, /Cache-Control/);
   assert.match(edgeFunction, /priority: "high"/);
   assert.match(edgeFunction, /provision_chapter_code/);
   assert.match(edgeFunction, /current_chapter_id/);
@@ -70,8 +78,16 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(volunteerMigration, /enable row level security/);
   assert.match(volunteerMigration, /Create your chapter Instagram account/);
   assert.match(volunteerMigration, /tasks_priority_always_high/);
+  assert.match(securityMigration, /submitted_by = \(select auth\.uid\(\)\)/);
+  assert.match(securityMigration, /revoke all on table public\.chapter_applications from anon/);
+  assert.match(securityMigration, /chapter_applications_submitted_by_unique_idx/);
+  assert.match(contactPayloadMigration, /jsonb_array_length\(additional_contacts\) <= 20/);
+  assert.match(nextConfig, /Content-Security-Policy/);
+  assert.match(nextConfig, /frame-ancestors 'none'/);
+  assert.match(worker, /secureResponse/);
   assert.doesNotMatch(css, /Cormorant Garamond/);
   assert.match(packageJson, /@supabase\/supabase-js/);
+  assert.match(packageJson, /"postcss": "8\.5\.19"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
 });

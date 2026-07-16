@@ -5,6 +5,8 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-client-info",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
 };
 
 const url = Deno.env.get("SUPABASE_URL") ?? "";
@@ -34,6 +36,15 @@ function slugify(value: string) {
   const suffix = crypto.randomUUID().slice(0, 6);
   const base = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 44) || "chapter";
   return `${base}-${suffix}`;
+}
+
+function boundedWholeNumber(value: unknown, maximum: number) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 && number <= maximum ? number : null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 async function requestAuth(req: Request) {
@@ -131,7 +142,15 @@ Deno.serve(async (req: Request) => {
   try {
     const auth = await requestAuth(req);
     if (!auth) return json({ error: "Access denied. Start a new access session and try again." }, 401);
-    const body = await req.json();
+    const declaredLength = Number(req.headers.get("content-length") ?? 0);
+    if (Number.isFinite(declaredLength) && declaredLength > 65_536) return json({ error: "The request is too large." }, 413);
+    let body: Record<string, unknown>;
+    try {
+      body = asRecord(await req.json());
+    } catch {
+      return json({ error: "Send a valid JSON request." }, 400);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "Send a valid JSON request." }, 400);
     const action = String(body.action ?? "");
 
     if (action === "chapter-login") {
@@ -153,18 +172,25 @@ Deno.serve(async (req: Request) => {
     if (action === "chapter-submit-report") {
       const chapterId = await currentChapterId(auth.userClient);
       if (!chapterId) return json({ error: "Your access session has expired. Enter your access code again." }, 401);
-      const report = body.report ?? {};
+      const report = asRecord(body.report);
+      const sessionsHeld = boundedWholeNumber(report.sessions_held, 1000);
+      const studentsServed = boundedWholeNumber(report.students_served, 100_000);
+      const mentorsPresent = boundedWholeNumber(report.mentors_present, 1000);
+      const highlights = String(report.highlights ?? "").trim().slice(0, 4000);
+      const nextWeekPlan = String(report.next_week_plan ?? "").trim().slice(0, 4000);
+      if (sessionsHeld === null || studentsServed === null || mentorsPresent === null) return json({ error: "Enter valid weekly totals." }, 400);
+      if (highlights.length < 2 || nextWeekPlan.length < 2) return json({ error: "Add this week’s highlights and next week’s plan." }, 400);
       const payload = {
         chapter_id: chapterId,
         week_start: String(report.week_start ?? new Date().toISOString().slice(0, 10)),
-        sessions_held: Math.max(0, Number(report.sessions_held ?? 0)),
-        students_served: Math.max(0, Number(report.students_served ?? 0)),
-        mentors_present: Math.max(0, Number(report.mentors_present ?? 0)),
+        sessions_held: sessionsHeld,
+        students_served: studentsServed,
+        mentors_present: mentorsPresent,
         completed_weekly_tasks: Boolean(report.completed_weekly_tasks),
-        highlights: String(report.highlights ?? "").slice(0, 4000),
-        blockers: String(report.blockers ?? "").slice(0, 4000),
-        next_week_plan: String(report.next_week_plan ?? "").slice(0, 4000),
-        support_needed: String(report.support_needed ?? "").slice(0, 4000),
+        highlights,
+        blockers: String(report.blockers ?? "").trim().slice(0, 4000),
+        next_week_plan: nextWeekPlan,
+        support_needed: String(report.support_needed ?? "").trim().slice(0, 4000),
         submitted_by: auth.user.id,
         submitted_at: new Date().toISOString(),
       };
@@ -199,7 +225,7 @@ Deno.serve(async (req: Request) => {
     if (action === "chapter-add-volunteer") {
       const chapterId = await currentChapterId(auth.userClient);
       if (!chapterId) return json({ error: "Your access session has expired. Enter your access code again." }, 401);
-      const volunteer = body.volunteer ?? {};
+      const volunteer = asRecord(body.volunteer);
       const payload = {
         chapter_id: chapterId,
         full_name: String(volunteer.full_name ?? "").trim().slice(0, 120),
@@ -253,7 +279,7 @@ Deno.serve(async (req: Request) => {
     if (action === "admin-overview") return json(await adminOverview());
 
     if (action === "admin-create-chapter") {
-      const chapter = body.chapter ?? {};
+      const chapter = asRecord(body.chapter);
       const payload = {
         name: String(chapter.name ?? "").trim(),
         slug: slugify(String(chapter.name ?? "")),
@@ -350,7 +376,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "admin-review-report") {
-      const review = body.review ?? {};
+      const review = asRecord(body.review);
       const reportId = String(review.report_id ?? "");
       const rating = Number(review.rating);
       const status = String(review.status ?? "reviewed");
@@ -375,7 +401,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "admin-assign-task") {
-      const task = body.task ?? {};
+      const task = asRecord(body.task);
       const { error } = await admin.from("tasks").insert({ title: String(task.title ?? "").trim(), description: String(task.description ?? "").trim() || null, assigned_chapter_id: String(task.chapter_id ?? ""), due_date: task.due_date || null, priority: "high", status: "open", created_by: auth.user.id });
       if (error) throw error;
       return json(await adminOverview());
@@ -388,8 +414,17 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "admin-create-event") {
-      const event = body.event ?? {};
-      const { error } = await admin.from("events").insert({ title: String(event.title ?? "").trim(), description: String(event.description ?? "").trim() || null, starts_at: event.starts_at, ends_at: event.ends_at || null, location: String(event.location ?? "").trim() || null, link: String(event.link ?? "").trim() || null, chapter_id: event.chapter_id || null, created_by: auth.user.id });
+      const event = asRecord(body.event);
+      const link = String(event.link ?? "").trim().slice(0, 2048);
+      if (link) {
+        try {
+          const protocol = new URL(link).protocol;
+          if (protocol !== "https:" && protocol !== "http:") return json({ error: "Use an http or https event link." }, 400);
+        } catch {
+          return json({ error: "Enter a valid event link." }, 400);
+        }
+      }
+      const { error } = await admin.from("events").insert({ title: String(event.title ?? "").trim().slice(0, 160), description: String(event.description ?? "").trim().slice(0, 4000) || null, starts_at: event.starts_at, ends_at: event.ends_at || null, location: String(event.location ?? "").trim().slice(0, 240) || null, link: link || null, chapter_id: event.chapter_id || null, created_by: auth.user.id });
       if (error) throw error;
       return json(await adminOverview());
     }

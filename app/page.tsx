@@ -374,28 +374,30 @@ export default function Page() {
     setBusy(true);
     const form = new FormData(formElement);
     const payload = {
-      contact_name: String(form.get("contact_name") ?? ""),
-      contact_email: String(form.get("contact_email") ?? ""),
-      contact_phone: String(form.get("contact_phone") ?? ""),
-      organization_name: String(form.get("organization_name") ?? ""),
-      location: String(form.get("location") ?? ""),
-      student_reach: String(form.get("student_reach") ?? ""),
-      why: String(form.get("why") ?? ""),
+      contact_name: String(form.get("contact_name") ?? "").trim().slice(0, 120),
+      contact_email: String(form.get("contact_email") ?? "").trim().toLowerCase().slice(0, 254),
+      contact_phone: String(form.get("contact_phone") ?? "").trim().slice(0, 40),
+      organization_name: String(form.get("organization_name") ?? "").trim().slice(0, 160),
+      location: String(form.get("location") ?? "").trim().slice(0, 160),
+      student_reach: String(form.get("student_reach") ?? "").slice(0, 120),
+      why: String(form.get("why") ?? "").trim().slice(0, 5000),
       additional_contacts: form.getAll("additional_name").map((name, index) => ({
-        full_name: String(name).trim(),
-        email: String(form.getAll("additional_email")[index] ?? "").trim(),
-        phone: String(form.getAll("additional_phone")[index] ?? "").trim(),
-        role: String(form.getAll("additional_role")[index] ?? "Volunteer").trim(),
+        full_name: String(name).trim().slice(0, 120),
+        email: String(form.getAll("additional_email")[index] ?? "").trim().toLowerCase().slice(0, 254),
+        phone: String(form.getAll("additional_phone")[index] ?? "").trim().slice(0, 40),
+        role: String(form.getAll("additional_role")[index] ?? "Volunteer").trim().slice(0, 80),
       })).filter((contact) => contact.full_name.length >= 2),
     };
     try {
+      await ensureAnonymousSession(captchaToken || undefined);
       const { error } = await supabase.from("chapter_applications").insert(payload);
       if (error) throw error;
       formElement.reset();
       goTo("access");
       setMessage("Application sent. We’ll review it and contact you by email.");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "We couldn’t send your application. Please try again.");
+      const code = (error as { code?: string })?.code;
+      setMessage(code === "23505" ? "An application has already been submitted from this access session." : error instanceof Error ? error.message : "We couldn’t send your application. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -527,7 +529,7 @@ export default function Page() {
     {notice && <div className="toast" role="status">{notice}<button onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}
 
     {view === "access" && <AccessView onLogin={chapterLogin} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} goTo={goTo} />}
-    {view === "apply" && <ApplicationView onSubmit={submitApplication} busy={busy} />}
+    {view === "apply" && <ApplicationView onSubmit={submitApplication} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} />}
     {view === "chapter" && dashboard && <ChapterView data={dashboard} onReport={submitReport} onToggleTask={toggleTask} onAddVolunteer={addVolunteer} onUpdateVolunteer={updateVolunteer} onDeleteVolunteer={deleteVolunteer} onLogout={chapterLogout} busy={busy} />}
     {view === "admin" && <AdminView data={adminData} ready={adminReady} tab={adminTab} setTab={setAdminTab} onLogin={adminLogin} onAction={adminAction} onLogout={adminLogout} issuedCode={issuedCode} setIssuedCode={setIssuedCode} onCaptcha={setCaptchaToken} busy={busy} />}
   </main>;
@@ -549,22 +551,24 @@ function AccessView({ onLogin, busy, authState, authMessage, onCaptcha, goTo }: 
   </section>;
 }
 
-function ApplicationView({ onSubmit, busy }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; busy: boolean }) {
+function ApplicationView({ onSubmit, busy, authState, authMessage, onCaptcha }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; authState: AuthState; authMessage: string; onCaptcha: (token: string) => void }) {
   const [additionalPeople, setAdditionalPeople] = useState<string[]>([]);
   return <section className="form-page">
     <div className="page-heading"><span className="tiny-label">Chapter application</span><h1>Start a chapter</h1><p>Add the primary lead and anyone else who will help run the chapter. We’ll keep the full team together when the chapter is approved.</p></div>
     <form className="surface-form" onSubmit={onSubmit}>
       <div className="form-grid">
-        <Field label="Primary lead name"><input name="contact_name" required /></Field>
-        <Field label="Primary lead email"><input name="contact_email" type="email" required /></Field>
-        <Field label="Primary lead phone"><input name="contact_phone" type="tel" required /></Field>
-        <Field label="School or organization"><input name="organization_name" required /></Field>
-        <Field label="City and state"><input name="location" placeholder="Raleigh, NC" required /></Field>
+        <Field label="Primary lead name"><input name="contact_name" minLength={2} maxLength={120} required /></Field>
+        <Field label="Primary lead email"><input name="contact_email" type="email" maxLength={254} required /></Field>
+        <Field label="Primary lead phone"><input name="contact_phone" type="tel" maxLength={40} required /></Field>
+        <Field label="School or organization"><input name="organization_name" minLength={2} maxLength={160} required /></Field>
+        <Field label="City and state"><input name="location" minLength={2} maxLength={160} placeholder="Raleigh, NC" required /></Field>
         <Field label="Students you plan to serve"><select name="student_reach" required defaultValue=""><option value="" disabled>Select one</option><option>K–5</option><option>Middle school</option><option>K–8</option><option>Competition math</option></select></Field>
       </div>
-      <section className="people-builder"><div className="people-builder-heading"><div><h2>Additional team members</h2><p>Add co-leads, officers, or volunteers who are joining with the primary lead.</p></div><Button type="button" kind="secondary" onClick={() => setAdditionalPeople((people) => [...people, crypto.randomUUID()])}>Add another person</Button></div>{additionalPeople.length ? <div className="people-stack">{additionalPeople.map((person, index) => <div className="person-row" key={person}><div className="person-row-heading"><strong>Person {index + 2}</strong><button type="button" onClick={() => setAdditionalPeople((people) => people.filter((id) => id !== person))}>Remove</button></div><div className="form-grid four"><Field label="Full name"><input name="additional_name" required /></Field><Field label="Email"><input name="additional_email" type="email" /></Field><Field label="Phone"><input name="additional_phone" type="tel" /></Field><Field label="Role"><input name="additional_role" placeholder="Co-lead, volunteer…" defaultValue="Volunteer" /></Field></div></div>)}</div> : <p className="people-empty">Only one person? You can continue without adding anyone else.</p>}</section>
-      <Field label="Why do you want to start this chapter?"><textarea name="why" rows={5} required /></Field>
-      <div className="form-footer"><p>Applications are reviewed manually. Approved chapters receive a private access code.</p><Button type="submit" disabled={busy}>{busy ? "Sending…" : "Send application"}</Button></div>
+      <section className="people-builder"><div className="people-builder-heading"><div><h2>Additional team members</h2><p>Add co-leads, officers, or volunteers who are joining with the primary lead.</p></div><Button type="button" kind="secondary" onClick={() => setAdditionalPeople((people) => [...people, crypto.randomUUID()])}>Add another person</Button></div>{additionalPeople.length ? <div className="people-stack">{additionalPeople.map((person, index) => <div className="person-row" key={person}><div className="person-row-heading"><strong>Person {index + 2}</strong><button type="button" onClick={() => setAdditionalPeople((people) => people.filter((id) => id !== person))}>Remove</button></div><div className="form-grid four"><Field label="Full name"><input name="additional_name" minLength={2} maxLength={120} required /></Field><Field label="Email"><input name="additional_email" type="email" maxLength={254} /></Field><Field label="Phone"><input name="additional_phone" type="tel" maxLength={40} /></Field><Field label="Role"><input name="additional_role" maxLength={80} placeholder="Co-lead, volunteer…" defaultValue="Volunteer" /></Field></div></div>)}</div> : <p className="people-empty">Only one person? You can continue without adding anyone else.</p>}</section>
+      <Field label="Why do you want to start this chapter?"><textarea name="why" rows={5} maxLength={5000} required /></Field>
+      {turnstileSiteKey && authState !== "ready" && <TurnstileChallenge onToken={onCaptcha} />}
+      {authMessage && <p className={`access-state ${authState}`}>{authMessage}</p>}
+      <div className="form-footer"><p>Applications are reviewed manually. Approved chapters receive a private access code.</p><Button type="submit" disabled={busy || authState !== "ready"}>{busy ? "Sending…" : authState === "loading" ? "Preparing secure form…" : "Send application"}</Button></div>
     </form>
   </section>;
 }
