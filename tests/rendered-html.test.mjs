@@ -29,7 +29,7 @@ test("server-renders the chapter operations homepage", async () => {
 });
 
 test("keeps the finished site free of starter-only infrastructure", async () => {
-  const [page, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nextConfig, worker, packageJson] = await Promise.all([
+  const [page, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, nextConfig, worker, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -37,6 +37,7 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
     readFile(new URL("../supabase/migrations/20260716004130_chapter_volunteers_and_instagram_onboarding.sql", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260716025513_harden_anonymous_application_submissions.sql", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260716031431_limit_application_contact_payload.sql", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20260716032009_national_chapter_impact.sql", import.meta.url), "utf8"),
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -53,6 +54,8 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /Chapter volunteers/);
   assert.match(page, /Our impact/);
   assert.match(page, /Students impacted/);
+  assert.match(page, /TMM National Chapter/);
+  assert.match(page, /Instructional hours/);
   assert.match(page, /Show.*completed/);
   assert.match(page, /Show.*closed/);
   assert.match(page, /Best rated chapters/);
@@ -66,6 +69,8 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(edgeFunction, /Only declined applications can be deleted/);
   assert.match(edgeFunction, /The request is too large/);
   assert.match(edgeFunction, /boundedWholeNumber/);
+  assert.match(edgeFunction, /boundedDecimal/);
+  assert.match(edgeFunction, /national-impact/);
   assert.match(edgeFunction, /Cache-Control/);
   assert.match(edgeFunction, /priority: "high"/);
   assert.match(edgeFunction, /provision_chapter_code/);
@@ -82,6 +87,10 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(securityMigration, /revoke all on table public\.chapter_applications from anon/);
   assert.match(securityMigration, /chapter_applications_submitted_by_unique_idx/);
   assert.match(contactPayloadMigration, /jsonb_array_length\(additional_contacts\) <= 20/);
+  assert.match(nationalImpactMigration, /national_chapter_impact/);
+  assert.match(nationalImpactMigration, /drop column if exists mentors_present/);
+  assert.doesNotMatch(page, /mentors_present|Mentor attendances/);
+  assert.doesNotMatch(edgeFunction, /mentors_present/);
   assert.match(nextConfig, /Content-Security-Policy/);
   assert.match(nextConfig, /frame-ancestors 'none'/);
   assert.match(worker, /secureResponse/);
