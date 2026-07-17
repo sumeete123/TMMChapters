@@ -308,6 +308,7 @@ button.notification-item { width: 100%; }
 .text-link { color: var(--accent); font-size: 10px; font-weight: 700; text-decoration: none; }
 .text-link:hover { text-decoration: underline; }
 .form-zone { margin-top: 30px; border-color: color-mix(in srgb, var(--accent) 22%, var(--line)); background: linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 35%, var(--surface)), var(--surface) 150px); }
+.form-note { margin: 0; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line)); border-radius: 9px; background: var(--accent-soft); color: var(--muted); font-size: 12px; }
 .form-zone-grid { margin-top: 30px; }
 .form-zone-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 24px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
 .form-zone-heading h2 { margin-bottom: 6px; font-size: 1.65rem; }

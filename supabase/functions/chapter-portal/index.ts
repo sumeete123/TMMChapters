@@ -87,7 +87,7 @@ async function getNationalImpact() {
 async function getChapterDashboard(chapterId: string) {
   const now = new Date().toISOString();
   const [chapterResult, tasksResult, eventsResult, reportsResult, volunteersResult] = await Promise.all([
-    admin.from("chapters").select("id, name, location, contact_name, contact_email, status").eq("id", chapterId).single(),
+    admin.from("chapters").select("id, name, location, contact_name, contact_email, status, is_official").eq("id", chapterId).single(),
     admin.from("tasks").select("id, title, description, due_date, priority, status, completed_at").eq("assigned_chapter_id", chapterId).neq("status", "archived").order("due_date", { ascending: true, nullsFirst: false }),
     admin.from("events").select("id, title, description, starts_at, ends_at, location, link, chapter_id").or(`chapter_id.is.null,chapter_id.eq.${chapterId}`).gte("starts_at", now).order("starts_at", { ascending: true }).limit(10),
     admin.from("weekly_reports").select("id, week_start, sessions_held, students_served, instructional_hours, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").eq("chapter_id", chapterId).order("week_start", { ascending: false }).limit(8),
@@ -120,7 +120,7 @@ async function getChapterDashboard(chapterId: string) {
 async function adminOverview() {
   const [applications, chapters, reports, reviews, tasks, events, volunteers, nationalImpact] = await Promise.all([
     admin.from("chapter_applications").select("id, contact_name, contact_email, contact_phone, additional_contacts, organization_name, location, student_reach, why, status, internal_notes, created_at").order("created_at", { ascending: false }),
-    admin.from("chapters").select("id, name, slug, location, contact_name, contact_email, contact_phone, advisor_name, advisor_email, status, access_code_hint, created_at").order("name"),
+    admin.from("chapters").select("id, name, slug, location, contact_name, contact_email, contact_phone, advisor_name, advisor_email, status, access_code_hint, is_official, created_at").order("name"),
     admin.from("weekly_reports").select("id, chapter_id, week_start, sessions_held, students_served, instructional_hours, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").order("week_start", { ascending: false }).limit(200),
     admin.from("weekly_report_reviews").select("report_id, status, rating, private_notes, public_feedback, reviewed_at, reviewed_by, updated_at").order("updated_at", { ascending: false }).limit(200),
     admin.from("tasks").select("id, title, description, assigned_chapter_id, due_date, priority, status, completed_at, created_at").order("created_at", { ascending: false }).limit(200),

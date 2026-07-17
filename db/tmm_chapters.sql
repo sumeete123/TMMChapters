@@ -43,6 +43,7 @@ create table if not exists public.chapters (
   advisor_email text,
   status public.chapter_status not null default 'pending',
   founded_at date,
+  is_official boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -143,10 +144,10 @@ create policy "Admins can update chapter applications"
 drop policy if exists "Admins and members can view chapters" on public.chapters;
 create policy "Admins and members can view chapters"
   on public.chapters for select to authenticated
-  using (public.is_admin() or exists (
+  using (public.is_admin() or (not is_official and exists (
     select 1 from public.chapter_members member
     where member.chapter_id = chapters.id and member.user_id = (select auth.uid()) and member.status = 'active'
-  ));
+  )));
 
 drop policy if exists "Admins can manage chapters" on public.chapters;
 drop policy if exists "Admins can insert chapters" on public.chapters;
