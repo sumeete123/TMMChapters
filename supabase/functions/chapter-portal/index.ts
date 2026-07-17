@@ -77,11 +77,18 @@ async function currentChapterId(userClient: SupabaseClient) {
 
 async function getNationalImpact() {
   const { data, error } = await admin.from("national_chapter_impact")
-    .select("name, students_taught, students_taught_is_minimum, instructional_hours, volunteer_count, session_count, chapter_count, as_of_date")
+    .select("name, students_impacted, students_taught, students_taught_is_minimum, instructional_hours, volunteer_count, session_count, chapter_count, as_of_date")
     .eq("id", "national")
     .single();
   if (error) throw error;
   return data;
+}
+
+async function getNationalChapterId() {
+  const { data, error } = await admin.from("chapters").select("id, is_official").eq("slug", "national").single();
+  if (error) throw error;
+  if (!data.is_official) throw new Error("The National Chapter is not marked official.");
+  return data.id as string;
 }
 
 async function getChapterDashboard(chapterId: string) {
@@ -294,6 +301,72 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "admin-overview") return json(await adminOverview());
+
+    if (action === "admin-update-national-impact") {
+      const impact = asRecord(body.impact);
+      const studentsImpacted = boundedWholeNumber(impact.students_impacted, 1_000_000);
+      const studentsTaught = boundedWholeNumber(impact.students_taught, 1_000_000);
+      const instructionalHours = boundedDecimal(impact.instructional_hours, 1_000_000);
+      const volunteerCount = boundedWholeNumber(impact.volunteer_count, 1_000_000);
+      const sessionCount = boundedWholeNumber(impact.session_count, 1_000_000);
+      const chapterCount = boundedWholeNumber(impact.chapter_count, 100_000);
+      const asOfDate = String(impact.as_of_date ?? "").trim();
+      if ([studentsImpacted, studentsTaught, instructionalHours, volunteerCount, sessionCount, chapterCount].some((value) => value === null) || !/^\d{4}-\d{2}-\d{2}$/.test(asOfDate)) {
+        return json({ error: "Enter valid National Chapter impact totals and an as-of date." }, 400);
+      }
+      const { error } = await admin.from("national_chapter_impact").update({
+        students_impacted: studentsImpacted,
+        students_taught: studentsTaught,
+        students_taught_is_minimum: false,
+        instructional_hours: instructionalHours,
+        volunteer_count: volunteerCount,
+        session_count: sessionCount,
+        chapter_count: chapterCount,
+        as_of_date: asOfDate,
+        updated_at: new Date().toISOString(),
+      }).eq("id", "national");
+      if (error) throw error;
+      return json({ overview: await adminOverview() });
+    }
+
+    if (action === "admin-submit-national-report") {
+      const report = asRecord(body.report);
+      const chapterId = await getNationalChapterId();
+      const sessionsHeld = boundedWholeNumber(report.sessions_held, 1000);
+      const studentsServed = boundedWholeNumber(report.students_served, 100_000);
+      const instructionalHours = boundedDecimal(report.instructional_hours, 1000);
+      const highlights = String(report.highlights ?? "").trim().slice(0, 4000);
+      const nextWeekPlan = String(report.next_week_plan ?? "").trim().slice(0, 4000);
+      if (sessionsHeld === null || studentsServed === null || instructionalHours === null) return json({ error: "Enter valid National Chapter weekly totals." }, 400);
+      if (highlights.length < 2 || nextWeekPlan.length < 2) return json({ error: "Add this week’s National Chapter highlights and next week’s plan." }, 400);
+      const { data: savedReport, error } = await admin.from("weekly_reports").upsert({
+        chapter_id: chapterId,
+        week_start: String(report.week_start ?? new Date().toISOString().slice(0, 10)),
+        sessions_held: sessionsHeld,
+        students_served: studentsServed,
+        instructional_hours: instructionalHours,
+        completed_weekly_tasks: Boolean(report.completed_weekly_tasks),
+        highlights,
+        blockers: String(report.blockers ?? "").trim().slice(0, 4000),
+        next_week_plan: nextWeekPlan,
+        support_needed: String(report.support_needed ?? "").trim().slice(0, 4000),
+        submitted_by: auth.user.id,
+        submitted_at: new Date().toISOString(),
+      }, { onConflict: "chapter_id,week_start" }).select("id").single();
+      if (error) throw error;
+      const { error: reviewResetError } = await admin.from("weekly_report_reviews").upsert({
+        report_id: savedReport.id,
+        status: "pending",
+        rating: null,
+        private_notes: null,
+        public_feedback: null,
+        reviewed_by: null,
+        reviewed_at: null,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "report_id" });
+      if (reviewResetError) throw reviewResetError;
+      return json({ overview: await adminOverview() });
+    }
 
     if (action === "admin-create-chapter") {
       const chapter = asRecord(body.chapter);

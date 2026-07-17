@@ -1,6 +1,7 @@
 create table if not exists public.national_chapter_impact (
   id text primary key default 'national' check (id = 'national'),
   name text not null check (char_length(btrim(name)) between 2 and 120),
+  students_impacted integer not null check (students_impacted >= 0),
   students_taught integer not null check (students_taught >= 0),
   students_taught_is_minimum boolean not null default true,
   instructional_hours numeric(8, 2) not null check (instructional_hours >= 0),
@@ -21,6 +22,7 @@ grant select on public.national_chapter_impact to service_role;
 insert into public.national_chapter_impact (
   id,
   name,
+  students_impacted,
   students_taught,
   students_taught_is_minimum,
   instructional_hours,
@@ -31,6 +33,7 @@ insert into public.national_chapter_impact (
 ) values (
   'national',
   'TMM National Chapter',
+  195,
   65,
   true,
   36,
@@ -41,6 +44,7 @@ insert into public.national_chapter_impact (
 )
 on conflict (id) do update set
   name = excluded.name,
+  students_impacted = excluded.students_impacted,
   students_taught = excluded.students_taught,
   students_taught_is_minimum = excluded.students_taught_is_minimum,
   instructional_hours = excluded.instructional_hours,

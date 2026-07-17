@@ -78,6 +78,7 @@ type Report = {
 
 type NationalImpact = {
   name: string;
+  students_impacted: number;
   students_taught: number;
   students_taught_is_minimum: boolean;
   instructional_hours: number;
@@ -116,7 +117,7 @@ type ChapterDashboardData = { chapter: Chapter; tasks: Task[]; events: ChapterEv
 type AdminData = { applications: Application[]; chapters: Chapter[]; reports: Report[]; reviews: ReportReview[]; tasks: Task[]; events: ChapterEvent[]; volunteers: Volunteer[]; nationalImpact: NationalImpact };
 type AdminActionResult = Partial<AdminData> & { code?: string; chapter?: Chapter; overview?: AdminData };
 
-const foundingImpact: NationalImpact = { name: "TMM National Chapter", students_taught: 65, students_taught_is_minimum: true, instructional_hours: 36, volunteer_count: 19, session_count: 36, chapter_count: 1, as_of_date: "2026-07-15" };
+const foundingImpact: NationalImpact = { name: "TMM National Chapter", students_impacted: 195, students_taught: 65, students_taught_is_minimum: false, instructional_hours: 36, volunteer_count: 19, session_count: 36, chapter_count: 1, as_of_date: "2026-07-17" };
 const emptyAdmin: AdminData = { applications: [], chapters: [], reports: [], reviews: [], tasks: [], events: [], volunteers: [], nationalImpact: foundingImpact };
 const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? "";
 
@@ -560,7 +561,7 @@ export default function Page() {
 function NationalImpactCard({ impact }: { impact: NationalImpact }) {
   const studentSuffix = impact.students_taught_is_minimum ? "+" : "";
   return <article className="national-impact-card" aria-label={`${impact.name} founding impact`}>
-    <div className="national-impact-copy"><span className="tiny-label">Built by two friends · growing nationally</span><h1>{impact.name}</h1><p>The work completed before the chapter network expands—real sessions, real instruction, and the volunteer team that made them possible.</p><div className="national-student-total"><strong>{impact.students_taught.toLocaleString()}{studentSuffix}</strong><span>students taught so far</span></div></div>
+    <div className="national-impact-copy"><span className="tiny-label">Built by two friends · growing nationally</span><h1>{impact.name}</h1><p>The work completed before the chapter network expands—real sessions, real instruction, and the volunteer team that made them possible.</p><div className="national-student-total"><div><strong>{impact.students_impacted.toLocaleString()}</strong><span>people impacted</span></div><div><strong>{impact.students_taught.toLocaleString()}{studentSuffix}</strong><span>students tutored</span></div></div></div>
     <div className="session-ledger" aria-label={`${impact.session_count} sessions held`}><div className="session-ledger-heading"><span>Session ledger</span><strong>{impact.session_count} held</strong></div><div className="session-marks" aria-hidden="true">{Array.from({ length: Math.min(36, impact.session_count) }, (_, index) => <i key={index} />)}</div></div>
     <dl className="national-impact-stats"><div><dt>Instruction</dt><dd>{Number(impact.instructional_hours).toLocaleString(undefined, { maximumFractionDigits: 2 })} hours</dd></div><div><dt>Volunteer team</dt><dd>{impact.volunteer_count} people</dd></div><div><dt>National network</dt><dd>{impact.chapter_count} chapter</dd></div></dl>
   </article>;
@@ -701,7 +702,8 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
   const reviewByReport = useMemo(() => new Map(data.reviews.map((review) => [review.report_id, review])), [data.reviews]);
   const reviewQueue = data.reports.filter((report) => (reviewByReport.get(report.id)?.status ?? "pending") === "pending");
   const followUps = data.reviews.filter((review) => review.status === "needs_follow_up").length;
-  const currentWeekReportChapters = new Set(data.reports.filter((report) => report.week_start === thisMonday()).map((report) => report.chapter_id));
+  const reportingChapterIds = new Set(data.chapters.filter((chapter) => chapter.status === "active" && !chapter.is_official).map((chapter) => chapter.id));
+  const currentWeekReportChapters = new Set(data.reports.filter((report) => report.week_start === thisMonday() && reportingChapterIds.has(report.chapter_id ?? "")).map((report) => report.chapter_id));
   const missingReports = data.chapters.filter((chapter) => chapter.status === "active" && !chapter.is_official && !currentWeekReportChapters.has(chapter.id));
   const orderedReports = [...data.reports].sort((a, b) => {
     const aPending = (reviewByReport.get(a.id)?.status ?? "pending") === "pending" ? 0 : 1;
@@ -726,6 +728,8 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
   const completedAdminTasks = data.tasks.filter((task) => task.status === "complete");
   const visibleAdminTasks = showCompletedAdminTasks ? data.tasks : openAdminTasks;
   const nationalBaseline = data.nationalImpact ?? foundingImpact;
+  const nationalChapter = data.chapters.find((chapter) => chapter.is_official);
+  const nationalReport = nationalChapter ? latestReport.get(nationalChapter.id) : undefined;
   if (!ready) return <section className="access-shell"><div className="access-card"><div className="card-heading"><span className="tiny-label">Admin access</span><h1>Enter admin code</h1><p>Use the secure 6-digit administrator access code.</p></div><form className="stack-form" onSubmit={onLogin}><Field label="6-digit admin code"><input className="code-input" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" minLength={6} maxLength={6} placeholder="••••••" required /></Field>{turnstileSiteKey && <TurnstileChallenge onToken={onCaptcha} />}<Button type="submit" disabled={busy}>{busy ? "Checking…" : "Open admin dashboard"}</Button></form></div></section>;
 
   const submitChapter = (event: FormEvent<HTMLFormElement>) => {
@@ -743,6 +747,14 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
     event.preventDefault();
     void onAction("admin-create-event", { event: Object.fromEntries(new FormData(event.currentTarget)) });
     event.currentTarget.reset();
+  };
+  const submitNationalImpact = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void onAction("admin-update-national-impact", { impact: Object.fromEntries(new FormData(event.currentTarget)) });
+  };
+  const submitNationalReport = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void onAction("admin-submit-national-report", { report: Object.fromEntries(new FormData(event.currentTarget)) });
   };
   const exportReviews = () => {
     const quote = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
@@ -767,8 +779,9 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
       {issuedCode && <div className="code-result"><div><span className="tiny-label">New chapter code · shown once</span><strong>{issuedCode.name}</strong><code>{issuedCode.code}</code></div><div><Button kind="secondary" onClick={() => navigator.clipboard.writeText(issuedCode.code)}>Copy code</Button><Button kind="quiet" onClick={() => setIssuedCode(null)}>Dismiss</Button></div></div>}
 
       {tab === "overview" && <>
-        <div className="admin-deadline-line"><span>Weekly reports are due every Sunday</span><strong>{currentWeekReportChapters.size}/{data.chapters.filter((chapter) => chapter.status === "active").length} submitted</strong><small>{longDate(weekDueDate())} · {dueTiming(weekDueDate())}</small></div>
-        <section className="impact-panel" aria-label="Our impact"><div className="impact-heading"><div><span className="section-kicker">{nationalBaseline.name} · founding baseline</span><h2>Our impact</h2></div><small>Verified totals from the work completed so far.</small></div><div className="impact-grid"><div><strong>{nationalBaseline.students_taught.toLocaleString()}{nationalBaseline.students_taught_is_minimum ? "+" : ""}</strong><span>Students taught</span></div><div><strong>{Number(nationalBaseline.instructional_hours).toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong><span>Instructional hours</span></div><div><strong>{nationalBaseline.volunteer_count.toLocaleString()}</strong><span>Volunteers</span></div><div><strong>{nationalBaseline.session_count.toLocaleString()}</strong><span>Sessions held</span></div><div><strong>{nationalBaseline.chapter_count.toLocaleString()}</strong><span>National chapter</span></div></div></section>
+        <div className="admin-deadline-line"><span>Weekly reports are due every Sunday</span><strong>{currentWeekReportChapters.size}/{reportingChapterIds.size} submitted</strong><small>{longDate(weekDueDate())} · {dueTiming(weekDueDate())}</small></div>
+        <section className="impact-panel" aria-label="Our impact"><div className="impact-heading"><div><span className="section-kicker">{nationalBaseline.name} · founding baseline</span><h2>Our impact</h2></div><small>Verified totals · as of {new Date(`${nationalBaseline.as_of_date}T12:00:00`).toLocaleDateString()}</small></div><div className="impact-grid"><div><strong>{nationalBaseline.students_impacted.toLocaleString()}</strong><span>People impacted</span></div><div><strong>{nationalBaseline.students_taught.toLocaleString()}{nationalBaseline.students_taught_is_minimum ? "+" : ""}</strong><span>Students tutored</span></div><div><strong>{Number(nationalBaseline.instructional_hours).toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong><span>Instructional hours</span></div><div><strong>{nationalBaseline.volunteer_count.toLocaleString()}</strong><span>Volunteers</span></div><div><strong>{nationalBaseline.session_count.toLocaleString()}</strong><span>Sessions held</span></div><div><strong>{nationalBaseline.chapter_count.toLocaleString()}</strong><span>National chapter</span></div></div></section>
+        {nationalChapter && <section className="admin-section national-admin-section"><div className="section-title"><div><span className="section-kicker">{nationalChapter.name} · admin-only</span><h2>National Chapter controls</h2><p>Update the public baseline and submit the National Chapter’s weekly report from this private admin workspace.</p></div><span className="status status-approved">Admin only</span></div><div className="admin-two-column"><form className="surface-form" onSubmit={submitNationalImpact}><div className="section-title"><div><h3>Impact baseline</h3><p>These totals appear on the public access page.</p></div></div><div className="form-grid three"><Field label="People impacted"><input name="students_impacted" type="number" min="0" defaultValue={nationalBaseline.students_impacted} required /></Field><Field label="Students tutored"><input name="students_taught" type="number" min="0" defaultValue={nationalBaseline.students_taught} required /></Field><Field label="Instructional hours"><input name="instructional_hours" type="number" min="0" step="0.25" defaultValue={nationalBaseline.instructional_hours} required /></Field><Field label="Volunteers"><input name="volunteer_count" type="number" min="0" defaultValue={nationalBaseline.volunteer_count} required /></Field><Field label="Sessions held"><input name="session_count" type="number" min="0" defaultValue={nationalBaseline.session_count} required /></Field><Field label="National chapters"><input name="chapter_count" type="number" min="1" defaultValue={nationalBaseline.chapter_count} required /></Field><Field label="As of date"><input name="as_of_date" type="date" defaultValue={nationalBaseline.as_of_date} required /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save impact totals"}</Button></div></form><form className="surface-form" onSubmit={submitNationalReport}><div className="section-title"><div><h3>Weekly report</h3><p>Only administrators can submit this report for the official chapter.</p></div>{nationalReport && <span className="last-saved">Last saved {new Date(nationalReport.submitted_at).toLocaleDateString()}</span>}</div><div className="form-grid four"><Field label="Week starting"><input type="date" name="week_start" defaultValue={nationalReport?.week_start ?? thisMonday()} required /></Field><Field label="Sessions held"><input type="number" name="sessions_held" min="0" defaultValue={nationalReport?.sessions_held ?? 0} required /></Field><Field label="People impacted"><input type="number" name="students_served" min="0" defaultValue={nationalReport?.students_served ?? 0} required /></Field><Field label="Instructional hours"><input type="number" name="instructional_hours" min="0" step="0.25" defaultValue={nationalReport?.instructional_hours ?? 0} required /></Field></div><label className="check-row"><input type="checkbox" name="completed_weekly_tasks" defaultChecked={nationalReport?.completed_weekly_tasks ?? false} /><span>National Chapter weekly priorities are complete.</span></label><div className="form-grid"><Field label="What did the National Chapter accomplish?"><textarea name="highlights" rows={4} defaultValue={nationalReport?.highlights ?? ""} required /></Field><Field label="What challenges came up?"><textarea name="blockers" rows={4} defaultValue={nationalReport?.blockers ?? ""} /></Field><Field label="What is planned for next week?"><textarea name="next_week_plan" rows={4} defaultValue={nationalReport?.next_week_plan ?? ""} required /></Field><Field label="What support is needed?"><textarea name="support_needed" rows={4} defaultValue={nationalReport?.support_needed ?? ""} /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>{busy ? "Saving…" : nationalReport ? "Update weekly report" : "Save weekly report"}</Button></div></form></div></section>}
         <div className="admin-focus-grid">
           <button className={missingReports.length ? "urgent" : "clear"} onClick={() => setTab("reviews")}><span>Missing reports</span><strong>{missingReports.length}</strong><small>Due Sunday</small></button>
           <button onClick={() => setTab("reviews")}><span>Awaiting review</span><strong>{reviewQueue.length}</strong><small>{followUps} need follow-up</small></button>
