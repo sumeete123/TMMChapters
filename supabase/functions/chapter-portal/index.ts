@@ -137,7 +137,20 @@ async function adminOverview() {
   ]);
   const firstError = [applications.error, chapters.error, reports.error, reviews.error, tasks.error, events.error, volunteers.error].find(Boolean);
   if (firstError) throw firstError;
-  return { applications: applications.data ?? [], chapters: chapters.data ?? [], reports: reports.data ?? [], reviews: reviews.data ?? [], tasks: tasks.data ?? [], events: events.data ?? [], volunteers: volunteers.data ?? [], nationalImpact };
+  // Attach each chapter's raw access code for the admin-only overview. Codes live
+  // in the private schema and are readable solely via this service-role RPC; the
+  // admin gate on this action is enforced before adminOverview() is ever called.
+  const codeByChapter = new Map<string, string>();
+  try {
+    const { data: codes } = await admin.rpc("admin_chapter_codes");
+    if (Array.isArray(codes)) {
+      for (const row of codes as Array<{ chapter_id: string; code: string }>) {
+        if (row?.chapter_id && row?.code) codeByChapter.set(row.chapter_id, row.code);
+      }
+    }
+  } catch { /* Codes are a convenience; the overview still loads without them. */ }
+  const chapters_with_codes = (chapters.data ?? []).map((chapter) => ({ ...chapter, access_code: codeByChapter.get(chapter.id) ?? null }));
+  return { applications: applications.data ?? [], chapters: chapters_with_codes, reports: reports.data ?? [], reviews: reviews.data ?? [], tasks: tasks.data ?? [], events: events.data ?? [], volunteers: volunteers.data ?? [], nationalImpact };
 }
 
 async function provisionUniqueChapterCode(chapterId: string, requestedCode?: unknown) {
