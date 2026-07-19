@@ -25,7 +25,8 @@ function randomSixDigitCode() {
   while (result.length < 6) {
     const bytes = crypto.getRandomValues(new Uint8Array(8));
     for (const byte of bytes) {
-      if (byte < 250) result.push(byte % 10);
+      if (result.length === 0 && byte < 252) result.push((byte % 9) + 1);
+      else if (result.length > 0 && byte < 250) result.push(byte % 10);
       if (result.length === 6) break;
     }
   }
@@ -50,6 +51,42 @@ function boundedDecimal(value: unknown, maximum: number) {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function chapterGeography(value: Record<string, unknown>) {
+  const chapterScope = String(value.chapter_scope ?? "").trim();
+  const city = String(value.city ?? "").trim().slice(0, 120);
+  const requestedRegion = String(value.region ?? "").trim().slice(0, 120);
+  const schoolName = String(value.school_name ?? "").trim().slice(0, 160);
+  if (city.length < 2) throw new Error("INVALID_CHAPTER_CITY");
+
+  if (chapterScope === "school") {
+    if (schoolName.length < 2) throw new Error("INVALID_CHAPTER_SCHOOL");
+    if (!["nc", "north carolina"].includes(requestedRegion.toLowerCase())) throw new Error("INVALID_NC_CHAPTER_REGION");
+    return {
+      chapter_scope: "school",
+      city,
+      region: "North Carolina",
+      school_name: schoolName,
+      name: schoolName,
+      location: `${city}, North Carolina`,
+    };
+  }
+
+  if (chapterScope === "regional") {
+    if (requestedRegion.length < 2) throw new Error("INVALID_CHAPTER_REGION");
+    if (["nc", "north carolina"].includes(requestedRegion.toLowerCase())) throw new Error("INVALID_REGIONAL_CHAPTER_REGION");
+    return {
+      chapter_scope: "regional",
+      city,
+      region: requestedRegion,
+      school_name: null,
+      name: `${city} Chapter`,
+      location: `${city}, ${requestedRegion}`,
+    };
+  }
+
+  throw new Error("INVALID_CHAPTER_SCOPE");
 }
 
 async function requestAuth(req: Request) {
@@ -94,7 +131,7 @@ async function getNationalChapterId() {
 async function getChapterDashboard(chapterId: string) {
   const now = new Date().toISOString();
   const [chapterResult, tasksResult, eventsResult, reportsResult, volunteersResult] = await Promise.all([
-    admin.from("chapters").select("id, name, location, contact_name, contact_email, status, is_official").eq("id", chapterId).single(),
+    admin.from("chapters").select("id, name, location, contact_name, contact_email, status, is_official, chapter_scope, city, region, school_name").eq("id", chapterId).single(),
     admin.from("tasks").select("id, title, description, due_date, priority, status, completed_at").eq("assigned_chapter_id", chapterId).neq("status", "archived").order("due_date", { ascending: true, nullsFirst: false }),
     admin.from("events").select("id, title, description, starts_at, ends_at, location, link, chapter_id").or(`chapter_id.is.null,chapter_id.eq.${chapterId}`).gte("starts_at", now).order("starts_at", { ascending: true }).limit(10),
     admin.from("weekly_reports").select("id, week_start, sessions_held, students_served, instructional_hours, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").eq("chapter_id", chapterId).order("week_start", { ascending: false }).limit(8),
@@ -126,8 +163,8 @@ async function getChapterDashboard(chapterId: string) {
 
 async function adminOverview() {
   const [applications, chapters, reports, reviews, tasks, events, volunteers, nationalImpact] = await Promise.all([
-    admin.from("chapter_applications").select("id, contact_name, contact_email, contact_phone, additional_contacts, organization_name, location, student_reach, why, status, internal_notes, created_at").order("created_at", { ascending: false }),
-    admin.from("chapters").select("id, name, slug, location, contact_name, contact_email, contact_phone, advisor_name, advisor_email, status, access_code_hint, is_official, created_at").order("name"),
+    admin.from("chapter_applications").select("id, contact_name, contact_email, contact_phone, additional_contacts, organization_name, location, chapter_scope, city, region, school_name, student_reach, why, status, internal_notes, created_at").order("created_at", { ascending: false }),
+    admin.from("chapters").select("id, name, slug, location, chapter_scope, city, region, school_name, contact_name, contact_email, contact_phone, advisor_name, advisor_email, status, access_code_hint, is_official, created_at").order("name"),
     admin.from("weekly_reports").select("id, chapter_id, week_start, sessions_held, students_served, instructional_hours, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").order("week_start", { ascending: false }).limit(200),
     admin.from("weekly_report_reviews").select("report_id, status, rating, private_notes, public_feedback, reviewed_at, reviewed_by, updated_at").order("updated_at", { ascending: false }).limit(200),
     admin.from("tasks").select("id, title, description, assigned_chapter_id, due_date, priority, status, completed_at, created_at").order("created_at", { ascending: false }).limit(200),
@@ -383,10 +420,15 @@ Deno.serve(async (req: Request) => {
 
     if (action === "admin-create-chapter") {
       const chapter = asRecord(body.chapter);
+      const geography = chapterGeography(chapter);
       const payload = {
-        name: String(chapter.name ?? "").trim(),
-        slug: slugify(String(chapter.name ?? "")),
-        location: String(chapter.location ?? "").trim(),
+        name: geography.name,
+        slug: slugify(geography.name),
+        location: geography.location,
+        chapter_scope: geography.chapter_scope,
+        city: geography.city,
+        region: geography.region,
+        school_name: geography.school_name,
         contact_name: String(chapter.contact_name ?? "").trim(),
         contact_email: String(chapter.contact_email ?? "").trim().toLowerCase(),
         contact_phone: String(chapter.contact_phone ?? "").trim() || null,
@@ -394,7 +436,7 @@ Deno.serve(async (req: Request) => {
         advisor_email: String(chapter.advisor_email ?? "").trim().toLowerCase() || null,
         status: "active",
       };
-      if (!payload.name || !payload.location || !payload.contact_name || !payload.contact_email) return json({ error: "Name, location, lead name, and lead email are required." }, 400);
+      if (!payload.contact_name || !payload.contact_email) return json({ error: "Lead name and lead email are required." }, 400);
       const { data, error } = await admin.from("chapters").insert(payload).select("id, name").single();
       if (error) throw error;
       let code: string;
@@ -412,10 +454,15 @@ Deno.serve(async (req: Request) => {
       const { data: application, error: applicationError } = await admin.from("chapter_applications").select("*").eq("id", applicationId).single();
       if (applicationError) throw applicationError;
       if (application.status === "approved") return json({ error: "This application is already approved." }, 409);
+      const geography = chapterGeography(application);
       const { data: chapter, error: chapterError } = await admin.from("chapters").insert({
-        name: application.organization_name,
-        slug: slugify(application.organization_name),
-        location: application.location,
+        name: geography.name,
+        slug: slugify(geography.name),
+        location: geography.location,
+        chapter_scope: geography.chapter_scope,
+        city: geography.city,
+        region: geography.region,
+        school_name: geography.school_name,
         contact_name: application.contact_name,
         contact_email: String(application.contact_email).toLowerCase(),
         contact_phone: application.contact_phone || null,
@@ -543,6 +590,11 @@ Deno.serve(async (req: Request) => {
     const message = error instanceof Error ? error.message : "Something went wrong.";
     if (message.includes("RATE_LIMITED")) return json({ error: "Too many attempts. Please wait 15 minutes and try again." }, 429);
     if (message.includes("INVALID_CODE_FORMAT")) return json({ error: "Enter a 6-digit access code." }, 400);
+    if (message.includes("chapters_one_open_school_idx")) return json({ error: "That school already has an active chapter." }, 409);
+    if (message.includes("chapters_one_open_regional_city_idx")) return json({ error: "That city already has an active regional chapter." }, 409);
+    if (message.includes("INVALID_NC_CHAPTER_REGION") || message.includes("INVALID_REGIONAL_CHAPTER_REGION")) return json({ error: "North Carolina uses school chapters. Locations outside North Carolina use regional city chapters." }, 400);
+    if (message.includes("INVALID_CHAPTER_SCHOOL")) return json({ error: "Enter the North Carolina school name." }, 400);
+    if (message.includes("INVALID_CHAPTER_CITY") || message.includes("INVALID_CHAPTER_REGION") || message.includes("INVALID_CHAPTER_SCOPE")) return json({ error: "Choose the chapter type and enter a valid city and region." }, 400);
     return json({ error: "The request could not be completed." }, 400);
   }
 });

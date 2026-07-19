@@ -24,12 +24,13 @@ test("server-renders the chapter operations homepage", async () => {
   assert.match(html, /Enter your chapter code/i);
   assert.match(html, /Apply to start a chapter/i);
   assert.match(html, /Admin/i);
+  assert.doesNotMatch(html, /founding impact|session ledger|people impacted/i);
   assert.doesNotMatch(html, /chapters worldwide|students served|our impact|donate/i);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
 test("keeps the finished site free of starter-only infrastructure", async () => {
-  const [page, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, nextConfig, worker, packageJson] = await Promise.all([
+  const [page, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, geographyMigration, nextConfig, worker, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -38,6 +39,7 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
     readFile(new URL("../supabase/migrations/20260716025513_harden_anonymous_application_submissions.sql", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260716031431_limit_application_contact_payload.sql", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260716032009_national_chapter_impact.sql", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20260719170946_chapter_geographic_scope.sql", import.meta.url), "utf8"),
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -67,6 +69,11 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /Best rated chapters/);
   assert.match(page, /additional_contacts/);
   assert.match(page, /Preparing secure form/);
+  assert.match(page, /One chapter per school/);
+  assert.match(page, /One chapter per city/);
+  assert.match(page, /Regional city chapter/);
+  assert.doesNotMatch(page, /function NationalImpactCard/);
+  assert.doesNotMatch(css, /\.national-impact-card/);
   assert.match(edgeFunction, /weekly_reports/);
   assert.match(edgeFunction, /chapter-add-volunteer/);
   assert.match(edgeFunction, /chapter-delete-volunteer/);
@@ -94,6 +101,11 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(securityMigration, /chapter_applications_submitted_by_unique_idx/);
   assert.match(contactPayloadMigration, /jsonb_array_length\(additional_contacts\) <= 20/);
   assert.match(nationalImpactMigration, /national_chapter_impact/);
+  assert.match(geographyMigration, /chapters_one_open_school_idx/);
+  assert.match(geographyMigration, /chapters_one_open_regional_city_idx/);
+  assert.match(geographyMigration, /name = 'Carmel Chapter'/);
+  assert.match(edgeFunction, /chapterGeography/);
+  assert.match(edgeFunction, /chapter-login/);
   assert.match(nationalImpactMigration, /drop column if exists mentors_present/);
   assert.doesNotMatch(page, /mentors_present|Mentor attendances/);
   assert.doesNotMatch(edgeFunction, /mentors_present/);

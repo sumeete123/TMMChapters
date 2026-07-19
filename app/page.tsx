@@ -7,6 +7,7 @@ type View = "access" | "apply" | "chapter" | "admin";
 type Theme = "light" | "dark";
 type AdminTab = "overview" | "applications" | "reviews" | "chapters" | "work";
 type AuthState = "loading" | "ready" | "error";
+type ChapterScope = "school" | "regional" | "official";
 
 type Chapter = {
   id: string;
@@ -21,6 +22,10 @@ type Chapter = {
   access_code_hint?: string | null;
   access_code?: string | null;
   is_official: boolean;
+  chapter_scope: ChapterScope;
+  city?: string | null;
+  region?: string | null;
+  school_name?: string | null;
 };
 
 type Task = {
@@ -108,6 +113,10 @@ type Application = {
   additional_contacts?: Array<{ full_name: string; email?: string; phone?: string; role?: string }>;
   organization_name: string;
   location: string;
+  chapter_scope: Exclude<ChapterScope, "official">;
+  city: string;
+  region: string;
+  school_name?: string | null;
   student_reach?: string | null;
   why?: string | null;
   status: string;
@@ -154,7 +163,12 @@ async function ensureAnonymousSession(captchaToken?: string) {
   if (currentError) throw currentError;
   if (current.session) {
     const { data: verified, error: verificationError } = await supabase.auth.getUser();
-    if (!verificationError && verified.user) return current.session;
+    if (!verificationError && verified.user) {
+      const expiresSoon = (current.session.expires_at ?? 0) * 1000 < Date.now() + 60_000;
+      if (!expiresSoon) return current.session;
+      const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
+      if (!refreshError && refreshed.session) return refreshed.session;
+    }
     await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
   }
   if (turnstileSiteKey && !captchaToken) throw new Error("CAPTCHA_REQUIRED");
@@ -289,7 +303,6 @@ export default function Page() {
   const [authMessage, setAuthMessage] = useState(turnstileSiteKey ? "Complete the security check to create a secure access session." : "Creating a secure access session…");
   const [captchaToken, setCaptchaToken] = useState("");
   const [dashboard, setDashboard] = useState<ChapterDashboardData | null>(null);
-  const [nationalImpact, setNationalImpact] = useState<NationalImpact>(foundingImpact);
   const [adminData, setAdminData] = useState<AdminData>(emptyAdmin);
   const [adminReady, setAdminReady] = useState(false);
   const [adminTab, setAdminTab] = useState<AdminTab>("overview");
@@ -328,10 +341,6 @@ export default function Page() {
         if (!active) return;
         setAuthState("ready");
         setAuthMessage("");
-        try {
-          const result = await invokePortal<{ impact: NationalImpact }>("national-impact");
-          if (active && result.impact) setNationalImpact(result.impact);
-        } catch { /* Keep the verified founding baseline visible if the live summary is temporarily unavailable. */ }
         if (initialView === "admin" && supabase) {
           const { data: allowed } = await supabase.rpc("is_admin");
           if (allowed === true) {
@@ -372,12 +381,19 @@ export default function Page() {
     event.preventDefault();
     setBusy(true);
     const form = new FormData(event.currentTarget);
+    const code = String(form.get("code") ?? "").trim();
     try {
       await ensureAnonymousSession(captchaToken || undefined);
-      const { data: verified, error } = await supabase!.rpc("verify_chapter_code", { input_code: String(form.get("code") ?? "").trim() });
-      if (error) throw error;
-      if (verified !== true) throw new Error("That access code is not valid.");
-      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-dashboard");
+      let result: { dashboard: ChapterDashboardData };
+      try {
+        result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-login", { code });
+      } catch (error) {
+        const message = error instanceof Error ? error.message.toLowerCase() : "";
+        if (!message.includes("expired") && !message.includes("access session")) throw error;
+        await supabase!.auth.signOut({ scope: "local" });
+        await ensureAnonymousSession(captchaToken || undefined);
+        result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-login", { code });
+      }
       setDashboard(result.dashboard);
       goTo("chapter");
     } catch (error) {
@@ -401,8 +417,14 @@ export default function Page() {
       contact_name: String(form.get("contact_name") ?? "").trim().slice(0, 120),
       contact_email: String(form.get("contact_email") ?? "").trim().toLowerCase().slice(0, 254),
       contact_phone: String(form.get("contact_phone") ?? "").trim().slice(0, 40),
-      organization_name: String(form.get("organization_name") ?? "").trim().slice(0, 160),
-      location: String(form.get("location") ?? "").trim().slice(0, 160),
+      organization_name: String(form.get("chapter_scope")) === "school"
+        ? String(form.get("school_name") ?? "").trim().slice(0, 160)
+        : `${String(form.get("city") ?? "").trim().slice(0, 120)} Chapter`,
+      location: `${String(form.get("city") ?? "").trim().slice(0, 120)}, ${String(form.get("region") ?? "").trim().slice(0, 120)}`,
+      chapter_scope: String(form.get("chapter_scope") ?? ""),
+      city: String(form.get("city") ?? "").trim().slice(0, 120),
+      region: String(form.get("region") ?? "").trim().slice(0, 120),
+      school_name: String(form.get("chapter_scope")) === "school" ? String(form.get("school_name") ?? "").trim().slice(0, 160) : null,
       student_reach: String(form.get("student_reach") ?? "").slice(0, 120),
       why: String(form.get("why") ?? "").trim().slice(0, 5000),
       additional_contacts: form.getAll("additional_name").map((name, index) => ({
@@ -421,7 +443,13 @@ export default function Page() {
       setMessage("Application sent. We’ll review it and contact you by email.");
     } catch (error) {
       const code = (error as { code?: string })?.code;
-      setMessage(code === "23505" ? "An application has already been submitted from this access session." : error instanceof Error ? error.message : "We couldn’t send your application. Please try again.");
+      const detail = error instanceof Error ? error.message : "";
+      const duplicatePlace = detail.includes("chapter_applications_one_open_school_idx")
+        ? "That school already has a chapter application under review."
+        : detail.includes("chapter_applications_one_open_regional_city_idx")
+          ? "That city already has a regional chapter application under review."
+          : "An application has already been submitted from this access session.";
+      setMessage(code === "23505" ? duplicatePlace : detail || "We couldn’t send your application. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -552,25 +580,15 @@ export default function Page() {
 
     {notice && <div className="toast" role="status">{notice}<button onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}
 
-    {view === "access" && <AccessView impact={nationalImpact} onLogin={chapterLogin} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} goTo={goTo} />}
+    {view === "access" && <AccessView onLogin={chapterLogin} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} goTo={goTo} />}
     {view === "apply" && <ApplicationView onSubmit={submitApplication} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} />}
     {view === "chapter" && dashboard && <ChapterView data={dashboard} onReport={submitReport} onToggleTask={toggleTask} onAddVolunteer={addVolunteer} onUpdateVolunteer={updateVolunteer} onDeleteVolunteer={deleteVolunteer} onLogout={chapterLogout} busy={busy} />}
     {view === "admin" && <AdminView data={adminData} ready={adminReady} tab={adminTab} setTab={setAdminTab} onLogin={adminLogin} onAction={adminAction} onLogout={adminLogout} issuedCode={issuedCode} setIssuedCode={setIssuedCode} onCaptcha={setCaptchaToken} busy={busy} />}
   </main>;
 }
 
-function NationalImpactCard({ impact }: { impact: NationalImpact }) {
-  const studentSuffix = impact.students_taught_is_minimum ? "+" : "";
-  return <article className="national-impact-card" aria-label={`${impact.name} founding impact`}>
-    <div className="national-impact-copy"><span className="tiny-label">Built by two friends · growing nationally</span><h1>{impact.name}</h1><p>The work completed before the chapter network expands—real sessions, real instruction, and the volunteer team that made them possible.</p><div className="national-student-total"><div><strong>{impact.students_impacted.toLocaleString()}</strong><span>people impacted</span></div><div><strong>{impact.students_taught.toLocaleString()}{studentSuffix}</strong><span>students tutored</span></div></div></div>
-    <div className="session-ledger" aria-label={`${impact.session_count} sessions held`}><div className="session-ledger-heading"><span>Session ledger</span><strong>{impact.session_count} held</strong></div><div className="session-marks" aria-hidden="true">{Array.from({ length: Math.min(36, impact.session_count) }, (_, index) => <i key={index} />)}</div></div>
-    <dl className="national-impact-stats"><div><dt>Instruction</dt><dd>{Number(impact.instructional_hours).toLocaleString(undefined, { maximumFractionDigits: 2 })} hours</dd></div><div><dt>Volunteer team</dt><dd>{impact.volunteer_count} people</dd></div><div><dt>National network</dt><dd>{impact.chapter_count} chapter</dd></div></dl>
-  </article>;
-}
-
-function AccessView({ impact, onLogin, busy, authState, authMessage, onCaptcha, goTo }: { impact: NationalImpact; onLogin: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; authState: AuthState; authMessage: string; onCaptcha: (token: string) => void; goTo: (view: View) => void }) {
-  return <section className="access-shell national-access">
-    <NationalImpactCard impact={impact} />
+function AccessView({ onLogin, busy, authState, authMessage, onCaptcha, goTo }: { onLogin: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; authState: AuthState; authMessage: string; onCaptcha: (token: string) => void; goTo: (view: View) => void }) {
+  return <section className="access-shell">
     <div className="access-column"><div className="access-card">
         <div className="card-heading"><span className="tiny-label">Chapter access</span><h1>Enter your chapter code</h1><p>Use the code provided when your chapter was approved.</p></div>
         <form onSubmit={onLogin} className="stack-form">
@@ -586,15 +604,26 @@ function AccessView({ impact, onLogin, busy, authState, authMessage, onCaptcha, 
 
 function ApplicationView({ onSubmit, busy, authState, authMessage, onCaptcha }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; authState: AuthState; authMessage: string; onCaptcha: (token: string) => void }) {
   const [additionalPeople, setAdditionalPeople] = useState<string[]>([]);
+  const [chapterScope, setChapterScope] = useState<Exclude<ChapterScope, "official">>("school");
   return <section className="form-page">
-    <div className="page-heading"><span className="tiny-label">Chapter application</span><h1>Start a chapter</h1><p>Add the primary lead and anyone else who will help run the chapter. We’ll keep the full team together when the chapter is approved.</p></div>
+    <div className="page-heading"><span className="tiny-label">Chapter application</span><h1>Start a chapter</h1><p>Chapter boundaries depend on location. Choose where you will operate before adding your team.</p></div>
     <form className="surface-form" onSubmit={onSubmit}>
+      <fieldset className="chapter-policy">
+        <legend>Where will this chapter operate?</legend>
+        <div className="chapter-policy-grid">
+          <label className={chapterScope === "school" ? "selected" : ""}><input type="radio" name="chapter_scope" value="school" checked={chapterScope === "school"} onChange={() => setChapterScope("school")} /><span><b>North Carolina</b><strong>School chapter</strong><small>One chapter per school</small></span></label>
+          <label className={chapterScope === "regional" ? "selected" : ""}><input type="radio" name="chapter_scope" value="regional" checked={chapterScope === "regional"} onChange={() => setChapterScope("regional")} /><span><b>Outside North Carolina</b><strong>Regional city chapter</strong><small>One chapter per city</small></span></label>
+        </div>
+      </fieldset>
+      <div className="scope-summary"><span>{chapterScope === "school" ? "NC" : "CITY"}</span><p>{chapterScope === "school" ? "Your chapter belongs to one North Carolina school. Another school in the same city may have its own chapter." : "Your chapter represents the whole city—not one high school, college, or organization."}</p></div>
       <div className="form-grid">
         <Field label="Primary lead name"><input name="contact_name" minLength={2} maxLength={120} required /></Field>
         <Field label="Primary lead email"><input name="contact_email" type="email" maxLength={254} required /></Field>
         <Field label="Primary lead phone"><input name="contact_phone" type="tel" maxLength={40} required /></Field>
-        <Field label="School or organization"><input name="organization_name" minLength={2} maxLength={160} required /></Field>
-        <Field label="City and state"><input name="location" minLength={2} maxLength={160} placeholder="Raleigh, NC" required /></Field>
+        <Field label="City"><input name="city" minLength={2} maxLength={120} placeholder={chapterScope === "school" ? "Raleigh" : "Carmel"} required /></Field>
+        {chapterScope === "school"
+          ? <><input type="hidden" name="region" value="North Carolina" /><Field label="School name" hint="The chapter will use this school’s name."><input name="school_name" minLength={2} maxLength={160} placeholder="School name" required /></Field></>
+          : <Field label="State, province, or country" hint="Used to distinguish cities with the same name."><input name="region" minLength={2} maxLength={120} placeholder="Indiana" required /></Field>}
         <Field label="Students you plan to serve"><select name="student_reach" required defaultValue=""><option value="" disabled>Select one</option><option>K–5</option><option>Middle school</option><option>K–8</option><option>Competition math</option></select></Field>
       </div>
       <section className="people-builder"><div className="people-builder-heading"><div><h2>Additional team members</h2><p>Add co-leads, officers, or volunteers who are joining with the primary lead.</p></div><Button type="button" kind="secondary" onClick={() => setAdditionalPeople((people) => [...people, crypto.randomUUID()])}>Add another person</Button></div>{additionalPeople.length ? <div className="people-stack">{additionalPeople.map((person, index) => <div className="person-row" key={person}><div className="person-row-heading"><strong>Person {index + 2}</strong><button type="button" onClick={() => setAdditionalPeople((people) => people.filter((id) => id !== person))}>Remove</button></div><div className="form-grid four"><Field label="Full name"><input name="additional_name" minLength={2} maxLength={120} required /></Field><Field label="Email"><input name="additional_email" type="email" maxLength={254} /></Field><Field label="Phone"><input name="additional_phone" type="tel" maxLength={40} /></Field><Field label="Role"><input name="additional_role" maxLength={80} placeholder="Co-lead, volunteer…" defaultValue="Volunteer" /></Field></div></div>)}</div> : <p className="people-empty">Only one person? You can continue without adding anyone else.</p>}</section>
@@ -694,6 +723,7 @@ function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVol
 function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issuedCode, setIssuedCode, onCaptcha, busy }: { data: AdminData; ready: boolean; tab: AdminTab; setTab: (tab: AdminTab) => void; onLogin: (event: FormEvent<HTMLFormElement>) => void; onAction: (action: string, payload: Record<string, unknown>, codeName?: string) => Promise<void>; onLogout: () => void; issuedCode: { name: string; code: string } | null; setIssuedCode: (value: { name: string; code: string } | null) => void; onCaptcha: (token: string) => void; busy: boolean }) {
   const [showClosedApplications, setShowClosedApplications] = useState(false);
   const [showCompletedAdminTasks, setShowCompletedAdminTasks] = useState(false);
+  const [manualChapterScope, setManualChapterScope] = useState<Exclude<ChapterScope, "official">>("school");
   const pending = data.applications.filter((application) => application.status === "new" || application.status === "reviewing").length;
   const latestReport = useMemo(() => {
     const result = new Map<string | undefined, Report>();
@@ -740,8 +770,10 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
   const submitChapter = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    void onAction("admin-create-chapter", { chapter: Object.fromEntries(form) }, String(form.get("name") ?? "Chapter"));
+    const name = manualChapterScope === "school" ? String(form.get("school_name") ?? "School chapter") : `${String(form.get("city") ?? "Regional")} Chapter`;
+    void onAction("admin-create-chapter", { chapter: Object.fromEntries(form) }, name);
     event.currentTarget.reset();
+    setManualChapterScope("school");
   };
   const submitTask = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -804,7 +836,7 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
         </div></details>
       </>}
 
-      {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Open applications stay visible. Approved and declined records are hidden by default.</p></div>{closedApplications.length > 0 && <button className="visibility-toggle" onClick={() => setShowClosedApplications((value) => !value)}>{showClosedApplications ? "Hide closed" : `Show ${closedApplications.length} closed`}</button>}</div><div className="application-list">{visibleApplications.length ? visibleApplications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>Primary lead: {application.contact_name}</span><a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.additional_contacts?.length ? <div className="applicant-team"><span className="section-kicker">Additional team members</span>{application.additional_contacts.map((contact, index) => <div key={`${contact.email}-${index}`}><strong>{contact.full_name}</strong><span>{contact.role || "Volunteer"}</span>{contact.email && <a href={`mailto:${contact.email}`}>{contact.email}</a>}{contact.phone && <span>{contact.phone}</span>}</div>)}</div> : null}{application.why && <p>{application.why}</p>}<div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & create code</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}{application.status === "declined" && <Button kind="danger" disabled={busy} onClick={() => window.confirm(`Permanently delete the declined application from ${application.organization_name}?`) && onAction("admin-delete-application", { application_id: application.id })}>Delete</Button>}</div></article>) : <Empty text={closedApplications.length ? "No applications need a decision. Use Show closed to view older records." : "No applications yet."} />}</div></section>}
+      {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Open applications stay visible. Approved and declined records are hidden by default.</p></div>{closedApplications.length > 0 && <button className="visibility-toggle" onClick={() => setShowClosedApplications((value) => !value)}>{showClosedApplications ? "Hide closed" : `Show ${closedApplications.length} closed`}</button>}</div><div className="application-list">{visibleApplications.length ? visibleApplications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>{application.chapter_scope === "school" ? "North Carolina school chapter" : "Regional city chapter"}</span><span>Primary lead: {application.contact_name}</span><a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.additional_contacts?.length ? <div className="applicant-team"><span className="section-kicker">Additional team members</span>{application.additional_contacts.map((contact, index) => <div key={`${contact.email}-${index}`}><strong>{contact.full_name}</strong><span>{contact.role || "Volunteer"}</span>{contact.email && <a href={`mailto:${contact.email}`}>{contact.email}</a>}{contact.phone && <span>{contact.phone}</span>}</div>)}</div> : null}{application.why && <p>{application.why}</p>}<div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & create code</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}{application.status === "declined" && <Button kind="danger" disabled={busy} onClick={() => window.confirm(`Permanently delete the declined application from ${application.organization_name}?`) && onAction("admin-delete-application", { application_id: application.id })}>Delete</Button>}</div></article>) : <Empty text={closedApplications.length ? "No applications need a decision. Use Show closed to view older records." : "No applications yet."} />}</div></section>}
 
       {tab === "reviews" && <>
         <div className="metric-strip admin-metrics">
@@ -839,7 +871,7 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
             const report = latestReport.get(chapter.id);
             const volunteers = data.volunteers.filter((volunteer) => volunteer.chapter_id === chapter.id && volunteer.status === "active").length;
             return <article className={`chapter-row ${chapter.is_official ? "official" : ""}`} key={chapter.id}>
-              <div><strong>{chapter.name}</strong><span>{chapter.location} · {volunteers} active volunteer{volunteers === 1 ? "" : "s"}</span></div>
+              <div><strong>{chapter.name}</strong><span>{chapter.is_official ? "Official National Chapter" : chapter.chapter_scope === "school" ? "North Carolina school chapter" : "Regional city chapter"} · {chapter.location} · {volunteers} active volunteer{volunteers === 1 ? "" : "s"}</span></div>
               <div><span>{chapter.contact_name}</span><a href={`mailto:${chapter.contact_email}`}>{chapter.contact_email}</a>{chapter.contact_phone && <span>{chapter.contact_phone}</span>}</div>
               <div><span>Latest report</span><strong className="plain-strong">{report ? new Date(`${report.week_start}T12:00:00`).toLocaleDateString() : "Not submitted"}</strong></div>
               <div className="chapter-row-end">{chapter.is_official ? <><span className="status status-approved">Official · admin only</span><Button kind="secondary" onClick={openNationalReport}>Weekly report</Button></> : <><Status value={chapter.status} /><span className="code-hint">Code <code>{chapter.access_code ?? (chapter.access_code_hint ? `••••${chapter.access_code_hint}` : "—")}</code></span>{chapter.access_code && <Button kind="quiet" disabled={busy} onClick={() => navigator.clipboard.writeText(chapter.access_code!)}>Copy</Button>}<Button kind="secondary" disabled={busy} onClick={() => onAction("admin-reset-code", { chapter_id: chapter.id }, chapter.name)}>Reset code</Button></>}</div>
@@ -847,14 +879,14 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
           })}</div> : <Empty text="No chapters have been added." />}
         </section>
         {nationalChapter && <details className="admin-section disclosure-form form-zone national-admin-section">
-          <summary><span><strong>Edit National Chapter impact</strong><small>Update the verified totals shown on the public access page.</small></span><b>＋</b></summary>
+          <summary><span><strong>Edit National Chapter impact</strong><small>Update the verified totals shown in the admin overview.</small></span><b>＋</b></summary>
           <form className="surface-form compact disclosure-content" onSubmit={submitNationalImpact}>
-            <div className="section-title"><div><span className="section-kicker">{nationalChapter.name} · public profile</span><h2>Public impact totals</h2><p>Weekly reports are managed under Weekly reviews; these cumulative figures control the public impact summary.</p></div><small>As of {new Date(`${nationalBaseline.as_of_date}T12:00:00`).toLocaleDateString()}</small></div>
+            <div className="section-title"><div><span className="section-kicker">{nationalChapter.name} · internal overview</span><h2>Impact totals</h2><p>Weekly reports are managed under Weekly reviews; these cumulative figures control the admin summary.</p></div><small>As of {new Date(`${nationalBaseline.as_of_date}T12:00:00`).toLocaleDateString()}</small></div>
             <div className="form-grid three"><Field label="People impacted"><input name="students_impacted" type="number" min="0" defaultValue={nationalBaseline.students_impacted} required /></Field><Field label="Students tutored"><input name="students_taught" type="number" min="0" defaultValue={nationalBaseline.students_taught} required /></Field><Field label="Instructional hours"><input name="instructional_hours" type="number" min="0" step="0.25" defaultValue={nationalBaseline.instructional_hours} required /></Field><Field label="Volunteers"><input name="volunteer_count" type="number" min="0" defaultValue={nationalBaseline.volunteer_count} required /></Field><Field label="Sessions held"><input name="session_count" type="number" min="0" defaultValue={nationalBaseline.session_count} required /></Field><Field label="National chapters"><input name="chapter_count" type="number" min="1" defaultValue={nationalBaseline.chapter_count} required /></Field><Field label="As of date"><input name="as_of_date" type="date" defaultValue={nationalBaseline.as_of_date} required /></Field></div>
             <div className="align-right"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save impact totals"}</Button></div>
           </form>
         </details>}
-        <details className="admin-section disclosure-form form-zone"><summary><span><strong>Add a chapter manually</strong><small>Open only when you need to create a chapter without an application.</small></span><b>＋</b></summary><form className="surface-form compact disclosure-content" onSubmit={submitChapter}><p className="form-note">The official National Chapter is already included in the directory and does not receive a chapter access code.</p><div className="form-grid three"><Field label="Chapter name"><input name="name" required /></Field><Field label="City and state"><input name="location" required /></Field><Field label="Lead name"><input name="contact_name" required /></Field><Field label="Lead email"><input name="contact_email" type="email" required /></Field><Field label="Lead phone"><input name="contact_phone" type="tel" /></Field><Field label="Custom 6-digit code" hint="Optional · exactly 6 digits"><input name="code" className="code-input small" inputMode="numeric" pattern="[0-9]{6}" minLength={6} maxLength={6} /></Field><Field label="Advisor name"><input name="advisor_name" /></Field><Field label="Advisor email"><input name="advisor_email" type="email" /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>Add chapter</Button></div></form></details>
+        <details className="admin-section disclosure-form form-zone"><summary><span><strong>Add a chapter manually</strong><small>Open only when you need to create a chapter without an application.</small></span><b>＋</b></summary><form className="surface-form compact disclosure-content" onSubmit={submitChapter}><p className="form-note">North Carolina chapters belong to one school. Chapters elsewhere represent one city. The official National Chapter does not receive a chapter access code.</p><div className="form-grid three"><Field label="Chapter type"><select name="chapter_scope" value={manualChapterScope} onChange={(event) => setManualChapterScope(event.target.value as Exclude<ChapterScope, "official">)}><option value="school">North Carolina school</option><option value="regional">Regional city</option></select></Field><Field label="City"><input name="city" required /></Field>{manualChapterScope === "school" ? <><input type="hidden" name="region" value="North Carolina" /><Field label="School name"><input name="school_name" required /></Field></> : <Field label="State, province, or country"><input name="region" required /></Field>}<Field label="Lead name"><input name="contact_name" required /></Field><Field label="Lead email"><input name="contact_email" type="email" required /></Field><Field label="Lead phone"><input name="contact_phone" type="tel" /></Field><Field label="Custom 6-digit code" hint="Optional · exactly 6 digits"><input name="code" className="code-input small" inputMode="numeric" pattern="[0-9]{6}" minLength={6} maxLength={6} /></Field><Field label="Advisor name"><input name="advisor_name" /></Field><Field label="Advisor email"><input name="advisor_email" type="email" /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>Add chapter</Button></div></form></details>
       </>}
 
       {tab === "work" && <>

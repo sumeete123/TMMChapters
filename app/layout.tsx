@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
-  const description = "National chapter impact, weekly reporting, volunteers, tasks, events, and administration for The Mastery Mentors.";
+  const description = "Chapter applications, secure access, weekly reporting, volunteers, tasks, events, and administration for The Mastery Mentors.";
   return {
     title: "TMM Chapters",
     description,
