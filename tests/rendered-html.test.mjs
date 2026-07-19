@@ -55,6 +55,12 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /Our impact/);
   assert.match(page, /Students impacted/);
   assert.match(page, /TMM National Chapter/);
+  assert.match(page, /id="national-weekly-report"/);
+  assert.match(page, /Submit the National Chapter weekly report/);
+  assert.match(page, /Edit National Chapter impact/);
+  assert.match(page, /const reportingChapters = data\.chapters\.filter\(\(chapter\) => chapter\.status === "active"\)/);
+  assert.doesNotMatch(page, /National Chapter controls/);
+  assert.doesNotMatch(page, /status === "active" && !chapter\.is_official/);
   assert.match(page, /Instructional hours/);
   assert.match(page, /Show.*completed/);
   assert.match(page, /Show.*closed/);

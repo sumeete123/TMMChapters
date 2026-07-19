@@ -216,6 +216,7 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--mute
 .row-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .chapter-row { display: grid; grid-template-columns: 1fr 1.2fr .75fr auto; align-items: center; gap: 20px; padding: 17px 0; border-top: 1px solid var(--line); }
 .chapter-row:first-child { border-top: 0; }
+.chapter-row.official { padding: 17px 14px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 11px; background: color-mix(in srgb, var(--accent-soft) 42%, var(--surface)); }
 .chapter-row > div > strong, .chapter-row > div > span, .chapter-row > div > a { display: block; }
 .chapter-row > div > span, .chapter-row > div > a { margin-top: 3px; color: var(--muted); font-size: 10px; text-decoration: none; }
 .chapter-row > div > a:hover { color: var(--accent); }
@@ -374,6 +375,8 @@ button.notification-item { width: 100%; }
 .national-admin-section { border-color: color-mix(in srgb, var(--accent) 34%, var(--line)); background: linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 48%, var(--surface)), var(--surface) 62%); }
 .national-admin-section h3 { margin: 0 0 4px; font-size: 1rem; }
 .national-admin-section .surface-form { height: 100%; }
+#national-weekly-report { scroll-margin-top: 86px; }
+#national-weekly-report > .section-title .review-meta { align-items: flex-end; flex-direction: column; }
 
 .admin-deadline-line { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 22px; margin-bottom: 12px; padding: 14px 18px; border-left: 4px solid var(--signal); border-radius: 10px; background: #17213d; color: #fff; }
 .admin-deadline-line span { font-size: 11px; font-weight: 700; }
