@@ -196,7 +196,12 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--mute
 .code-result strong, .code-result code { display: block; }
 .code-result strong { margin-bottom: 8px; }
 .code-result code { color: var(--accent); font-family: "IBM Plex Mono", monospace; font-size: 18px; font-weight: 600; letter-spacing: .05em; }
-.code-result > div:last-child { display: flex; gap: 7px; }
+.code-result p { max-width: 520px; margin: 9px 0 0; color: var(--muted); font-size: 10px; }
+.code-result-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.starter-resources { display: flex; align-items: center; justify-content: space-between; gap: 28px; margin-bottom: 18px; padding: 22px 24px; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line)); border-radius: var(--radius); background: linear-gradient(120deg, var(--accent-soft), var(--surface) 60%); }
+.starter-resources h2 { margin-bottom: 5px; font-size: 1.15rem; }
+.starter-resources p { max-width: 590px; margin: 0; font-size: 11px; }
+.starter-resource-links { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .application-list, .chapter-list { display: flex; flex-direction: column; gap: 10px; }
 .application-card { padding: 18px; border: 1px solid var(--line); border-radius: 11px; background: var(--canvas); }
 .application-top { display: flex; justify-content: space-between; gap: 20px; }
@@ -443,14 +448,14 @@ button.notification-item { width: 100%; }
   .form-grid, .form-grid.three, .form-grid.four, .content-grid, .admin-two-column { grid-template-columns: 1fr; }
   .chapter-policy-grid { grid-template-columns: 1fr; }
   .metric-strip, .metric-strip.admin-metrics, .report-stats, .report-narrative { grid-template-columns: 1fr; }
-  .form-footer, .workspace-heading, .section-title, .code-result, .form-zone-heading, .impact-heading { align-items: stretch; flex-direction: column; }
+  .form-footer, .workspace-heading, .section-title, .code-result, .starter-resources, .form-zone-heading, .impact-heading { align-items: stretch; flex-direction: column; }
   .form-footer .button { width: 100%; }
   .workspace-content, .admin-content { padding: 25px 14px 60px; }
   .work-section, .admin-section { padding: 19px; }
   .chapter-row { grid-template-columns: 1fr; gap: 10px; }
   .chapter-row-end { flex-wrap: wrap; }
   .review-meta, .review-card-heading, .missing-list > div { align-items: stretch; flex-direction: column; }
-  .code-result > div:last-child { margin-top: 12px; }
+  .code-result-actions, .starter-resource-links { justify-content: flex-start; margin-top: 12px; }
   .toast { left: 14px; right: 14px; top: 72px; max-width: none; }
   .priority-board, .admin-priority { grid-template-columns: 1fr; border-radius: 15px; }
   .sunday-signal { min-height: 0; flex-direction: row; align-items: center; justify-content: flex-start; gap: 11px; padding: 18px 20px; border-right: 0; border-bottom: 1px solid rgba(255,255,255,.14); text-align: left; }

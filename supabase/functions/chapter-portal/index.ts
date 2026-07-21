@@ -437,7 +437,7 @@ Deno.serve(async (req: Request) => {
         status: "active",
       };
       if (!payload.contact_name || !payload.contact_email) return json({ error: "Lead name and lead email are required." }, 400);
-      const { data, error } = await admin.from("chapters").insert(payload).select("id, name").single();
+      const { data, error } = await admin.from("chapters").insert(payload).select("id, name, contact_name, contact_email").single();
       if (error) throw error;
       let code: string;
       try {
@@ -467,7 +467,7 @@ Deno.serve(async (req: Request) => {
         contact_email: String(application.contact_email).toLowerCase(),
         contact_phone: application.contact_phone || null,
         status: "active",
-      }).select("id, name").single();
+      }).select("id, name, contact_name, contact_email").single();
       if (chapterError) throw chapterError;
       let code: string;
       try {

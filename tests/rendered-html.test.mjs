@@ -53,6 +53,10 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /Weekly reports are due every Sunday/);
   assert.match(page, /Notifications/);
   assert.match(page, /Chapter command center/);
+  assert.match(page, /Everything you need to launch your chapter/);
+  assert.match(page, /Send approval email/);
+  assert.match(page, /1YVnkXYF1WHyXeoD81Hq9jF_dJJyaxJ3jfl2bzHgaVFs/);
+  assert.match(page, /1hgxSoDHWPXDa6twMTREy772fba_G6dborm01ajz_O5g/);
   assert.match(page, /Chapter volunteers/);
   assert.match(page, /Our impact/);
   assert.match(page, /Students impacted/);

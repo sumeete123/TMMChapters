@@ -9,6 +9,9 @@ type AdminTab = "overview" | "applications" | "reviews" | "chapters" | "work";
 type AuthState = "loading" | "ready" | "error";
 type ChapterScope = "school" | "regional" | "official";
 
+const CHAPTER_SETUP_GUIDE_URL = "https://docs.google.com/document/d/1YVnkXYF1WHyXeoD81Hq9jF_dJJyaxJ3jfl2bzHgaVFs/edit?tab=t.0#heading=h.j0nfdxulwp7w";
+const CHAPTER_OPERATIONS_GUIDE_URL = "https://docs.google.com/document/d/1hgxSoDHWPXDa6twMTREy772fba_G6dborm01ajz_O5g/edit?tab=t.0#heading=h.pr0guz6cdj1x";
+
 type Chapter = {
   id: string;
   name: string;
@@ -126,6 +129,7 @@ type Application = {
 type ChapterDashboardData = { chapter: Chapter; tasks: Task[]; events: ChapterEvent[]; reports: Report[]; volunteers: Volunteer[] };
 type AdminData = { applications: Application[]; chapters: Chapter[]; reports: Report[]; reviews: ReportReview[]; tasks: Task[]; events: ChapterEvent[]; volunteers: Volunteer[]; nationalImpact: NationalImpact };
 type AdminActionResult = Partial<AdminData> & { code?: string; chapter?: Chapter; overview?: AdminData };
+type IssuedCode = { name: string; code: string; contactName?: string; contactEmail?: string };
 
 const foundingImpact: NationalImpact = { name: "TMM National Chapter", students_impacted: 195, students_taught: 65, students_taught_is_minimum: false, instructional_hours: 36, volunteer_count: 19, session_count: 36, chapter_count: 1, as_of_date: "2026-07-17" };
 const emptyAdmin: AdminData = { applications: [], chapters: [], reports: [], reviews: [], tasks: [], events: [], volunteers: [], nationalImpact: foundingImpact };
@@ -306,7 +310,7 @@ export default function Page() {
   const [adminData, setAdminData] = useState<AdminData>(emptyAdmin);
   const [adminReady, setAdminReady] = useState(false);
   const [adminTab, setAdminTab] = useState<AdminTab>("overview");
-  const [issuedCode, setIssuedCode] = useState<{ name: string; code: string } | null>(null);
+  const [issuedCode, setIssuedCode] = useState<IssuedCode | null>(null);
 
   const goTo = (next: View) => {
     setView(next);
@@ -556,7 +560,12 @@ export default function Page() {
       if ("overview" in result && result.overview) setAdminData(result.overview as AdminData);
       else if ("applications" in result) setAdminData(result as AdminData);
       else await loadAdmin();
-      if (result.code) setIssuedCode({ name: result.chapter?.name ?? codeName ?? "Chapter", code: result.code });
+      if (result.code) setIssuedCode({
+        name: result.chapter?.name ?? codeName ?? "Chapter",
+        code: result.code,
+        contactName: result.chapter?.contact_name,
+        contactEmail: result.chapter?.contact_email,
+      });
       setMessage("Saved.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "The change could not be saved."); }
     finally { setBusy(false); }
@@ -673,6 +682,14 @@ function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVol
     <div className="workspace-content" id="home">
       <div className="workspace-heading command-heading"><div><span className="tiny-label">Chapter command center</span><h1>{data.chapter.name}</h1><p>Your assignments, deadlines, updates, and reporting are organized by what needs attention first.</p></div><Status value={data.chapter.status} /></div>
 
+      <section className="starter-resources" aria-labelledby="starter-resources-heading">
+        <div><span className="section-kicker">Start here</span><h2 id="starter-resources-heading">Everything you need to launch your chapter</h2><p>Keep these two TMM guides handy as you organize your team and begin chapter operations.</p></div>
+        <div className="starter-resource-links">
+          <a className="button secondary" href={CHAPTER_SETUP_GUIDE_URL} target="_blank" rel="noreferrer">Open chapter setup guide ↗</a>
+          <a className="button secondary" href={CHAPTER_OPERATIONS_GUIDE_URL} target="_blank" rel="noreferrer">Open chapter operations guide ↗</a>
+        </div>
+      </section>
+
       <section className={`priority-board ${current ? "is-complete" : ""}`} aria-label="Most important this week">
         <div className="sunday-signal"><span>Weekly deadline</span><strong>SUN</strong><time>{due.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time></div>
         <div className="priority-copy"><span className="priority-eyebrow">{current ? "Weekly report complete" : dueTiming(due)}</span><h2>{current ? "You’re checked in for this week." : "Your weekly report is due Sunday."}</h2><p>{current ? `${reviewLabel(current.review_status)}. You can update the report until the week closes.` : "Share what your chapter accomplished, what comes next, and any support you need."}</p><a className="button primary" href={current ? "#history" : "#weekly"}>{current ? "View report status" : "Complete weekly report"}</a></div>
@@ -720,7 +737,7 @@ function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVol
   </section>;
 }
 
-function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issuedCode, setIssuedCode, onCaptcha, busy }: { data: AdminData; ready: boolean; tab: AdminTab; setTab: (tab: AdminTab) => void; onLogin: (event: FormEvent<HTMLFormElement>) => void; onAction: (action: string, payload: Record<string, unknown>, codeName?: string) => Promise<void>; onLogout: () => void; issuedCode: { name: string; code: string } | null; setIssuedCode: (value: { name: string; code: string } | null) => void; onCaptcha: (token: string) => void; busy: boolean }) {
+function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issuedCode, setIssuedCode, onCaptcha, busy }: { data: AdminData; ready: boolean; tab: AdminTab; setTab: (tab: AdminTab) => void; onLogin: (event: FormEvent<HTMLFormElement>) => void; onAction: (action: string, payload: Record<string, unknown>, codeName?: string) => Promise<void>; onLogout: () => void; issuedCode: IssuedCode | null; setIssuedCode: (value: IssuedCode | null) => void; onCaptcha: (token: string) => void; busy: boolean }) {
   const [showClosedApplications, setShowClosedApplications] = useState(false);
   const [showCompletedAdminTasks, setShowCompletedAdminTasks] = useState(false);
   const [manualChapterScope, setManualChapterScope] = useState<Exclude<ChapterScope, "official">>("school");
@@ -817,7 +834,7 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
     <aside className="admin-sidebar"><div><span className="tiny-label">Administration</span><h2>Chapter operations</h2><p>Weekly deadline: Sunday</p></div><nav><button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>Home {adminAttention > 0 && <b>{adminAttention}</b>}</button><button className={tab === "applications" ? "active" : ""} onClick={() => setTab("applications")}>Applications {pending > 0 && <b>{pending}</b>}</button><button className={tab === "reviews" ? "active" : ""} onClick={() => setTab("reviews")}>Weekly reviews {reviewQueue.length > 0 && <b>{reviewQueue.length}</b>}</button><button className={tab === "chapters" ? "active" : ""} onClick={() => setTab("chapters")}>Chapters</button><button className={tab === "work" ? "active" : ""} onClick={() => setTab("work")}>Assignments & events</button></nav><button className="sidebar-action" onClick={onLogout}>Sign out admin</button></aside>
     <div className="admin-content">
       <div className="workspace-heading command-heading"><div><span className="tiny-label">Admin command center</span><h1>{tab === "overview" ? "Today’s priorities" : tab === "applications" ? "Applications" : tab === "reviews" ? "Weekly reviews" : tab === "chapters" ? "Chapters" : "Assignments & events"}</h1><p>{tab === "overview" ? "The work that needs attention is collected here. Detailed tools stay one click away." : "Use the sections below to review details and make changes."}</p></div></div>
-      {issuedCode && <div className="code-result"><div><span className="tiny-label">New chapter code · also saved under Chapters</span><strong>{issuedCode.name}</strong><code>{issuedCode.code}</code></div><div><Button kind="secondary" onClick={() => navigator.clipboard.writeText(issuedCode.code)}>Copy code</Button><Button kind="quiet" onClick={() => setIssuedCode(null)}>Dismiss</Button></div></div>}
+      {issuedCode && <div className="code-result"><div><span className="tiny-label">Approval package · code also saved under Chapters</span><strong>{issuedCode.name}</strong><code>{issuedCode.code}</code><p>The approval email includes the access code and both chapter-start guides.</p></div><div className="code-result-actions">{issuedCode.contactEmail && <a className="button primary" href={`mailto:${issuedCode.contactEmail}?subject=${encodeURIComponent(`Your TMM chapter is approved — ${issuedCode.name}`)}&body=${encodeURIComponent(`Hi ${issuedCode.contactName || "there"},\n\nGreat news — your application to start ${issuedCode.name} has been approved!\n\nYour private chapter access code is: ${issuedCode.code}\n\nUse these two guides to get your chapter started:\n\n1. Chapter setup guide\n${CHAPTER_SETUP_GUIDE_URL}\n\n2. Chapter operations guide\n${CHAPTER_OPERATIONS_GUIDE_URL}\n\nKeep your access code private. You can use it to open the TMM Chapters portal and manage your chapter.\n\nWelcome to The Mastery Mentors!`)}`}>Send approval email</a>}<Button kind="secondary" onClick={() => navigator.clipboard.writeText(`Your TMM chapter is approved!\n\nAccess code: ${issuedCode.code}\n\nChapter setup guide: ${CHAPTER_SETUP_GUIDE_URL}\n\nChapter operations guide: ${CHAPTER_OPERATIONS_GUIDE_URL}`)}>Copy full message</Button><Button kind="quiet" onClick={() => setIssuedCode(null)}>Dismiss</Button></div></div>}
 
       {tab === "overview" && <>
         <div className="admin-deadline-line"><span>Weekly reports are due every Sunday</span><strong>{currentWeekReportChapters.size}/{reportingChapterIds.size} submitted</strong><small>{longDate(weekDueDate())} · {dueTiming(weekDueDate())}</small></div>
@@ -836,7 +853,7 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
         </div></details>
       </>}
 
-      {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Open applications stay visible. Approved and declined records are hidden by default.</p></div>{closedApplications.length > 0 && <button className="visibility-toggle" onClick={() => setShowClosedApplications((value) => !value)}>{showClosedApplications ? "Hide closed" : `Show ${closedApplications.length} closed`}</button>}</div><div className="application-list">{visibleApplications.length ? visibleApplications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>{application.chapter_scope === "school" ? "North Carolina school chapter" : "Regional city chapter"}</span><span>Primary lead: {application.contact_name}</span><a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.additional_contacts?.length ? <div className="applicant-team"><span className="section-kicker">Additional team members</span>{application.additional_contacts.map((contact, index) => <div key={`${contact.email}-${index}`}><strong>{contact.full_name}</strong><span>{contact.role || "Volunteer"}</span>{contact.email && <a href={`mailto:${contact.email}`}>{contact.email}</a>}{contact.phone && <span>{contact.phone}</span>}</div>)}</div> : null}{application.why && <p>{application.why}</p>}<div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & create code</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}{application.status === "declined" && <Button kind="danger" disabled={busy} onClick={() => window.confirm(`Permanently delete the declined application from ${application.organization_name}?`) && onAction("admin-delete-application", { application_id: application.id })}>Delete</Button>}</div></article>) : <Empty text={closedApplications.length ? "No applications need a decision. Use Show closed to view older records." : "No applications yet."} />}</div></section>}
+      {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Open applications stay visible. Approved and declined records are hidden by default.</p></div>{closedApplications.length > 0 && <button className="visibility-toggle" onClick={() => setShowClosedApplications((value) => !value)}>{showClosedApplications ? "Hide closed" : `Show ${closedApplications.length} closed`}</button>}</div><div className="application-list">{visibleApplications.length ? visibleApplications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>{application.chapter_scope === "school" ? "North Carolina school chapter" : "Regional city chapter"}</span><span>Primary lead: {application.contact_name}</span><a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.additional_contacts?.length ? <div className="applicant-team"><span className="section-kicker">Additional team members</span>{application.additional_contacts.map((contact, index) => <div key={`${contact.email}-${index}`}><strong>{contact.full_name}</strong><span>{contact.role || "Volunteer"}</span>{contact.email && <a href={`mailto:${contact.email}`}>{contact.email}</a>}{contact.phone && <span>{contact.phone}</span>}</div>)}</div> : null}{application.why && <p>{application.why}</p>}<div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & prepare email</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}{application.status === "declined" && <Button kind="danger" disabled={busy} onClick={() => window.confirm(`Permanently delete the declined application from ${application.organization_name}?`) && onAction("admin-delete-application", { application_id: application.id })}>Delete</Button>}</div></article>) : <Empty text={closedApplications.length ? "No applications need a decision. Use Show closed to view older records." : "No applications yet."} />}</div></section>}
 
       {tab === "reviews" && <>
         <div className="metric-strip admin-metrics">
