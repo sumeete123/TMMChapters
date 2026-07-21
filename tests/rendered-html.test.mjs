@@ -30,7 +30,7 @@ test("server-renders the chapter operations homepage", async () => {
 });
 
 test("keeps the finished site free of starter-only infrastructure", async () => {
-  const [page, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, geographyMigration, nextConfig, worker, packageJson] = await Promise.all([
+  const [page, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, geographyMigration, executiveTeamMigration, nextConfig, worker, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -40,6 +40,7 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
     readFile(new URL("../supabase/migrations/20260716031431_limit_application_contact_payload.sql", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260716032009_national_chapter_impact.sql", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260719170946_chapter_geographic_scope.sql", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20260721160539_chapter_executive_team.sql", import.meta.url), "utf8"),
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -58,6 +59,10 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /1YVnkXYF1WHyXeoD81Hq9jF_dJJyaxJ3jfl2bzHgaVFs/);
   assert.match(page, /1hgxSoDHWPXDa6twMTREy772fba_G6dborm01ajz_O5g/);
   assert.match(page, /Chapter volunteers/);
+  assert.match(page, /Chapter executive team/);
+  assert.match(page, /Director of Events/);
+  assert.match(page, /Director of Marketing/);
+  assert.match(page, /Director of Tutoring/);
   assert.match(page, /Our impact/);
   assert.match(page, /Students impacted/);
   assert.match(page, /TMM National Chapter/);
@@ -81,6 +86,8 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(edgeFunction, /weekly_reports/);
   assert.match(edgeFunction, /chapter-add-volunteer/);
   assert.match(edgeFunction, /chapter-delete-volunteer/);
+  assert.match(edgeFunction, /chapter-add-executive-candidate/);
+  assert.match(edgeFunction, /chapter-update-executive-candidate/);
   assert.match(edgeFunction, /admin-delete-task/);
   assert.match(edgeFunction, /admin-delete-event/);
   assert.match(edgeFunction, /Only declined applications can be deleted/);
@@ -108,6 +115,10 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(geographyMigration, /chapters_one_open_school_idx/);
   assert.match(geographyMigration, /chapters_one_open_regional_city_idx/);
   assert.match(geographyMigration, /name = 'Carmel Chapter'/);
+  assert.match(executiveTeamMigration, /chapter_executive_candidates/);
+  assert.match(executiveTeamMigration, /enable row level security/);
+  assert.match(executiveTeamMigration, /Create your chapter executive team/);
+  assert.match(executiveTeamMigration, /chapter_executive_candidates_one_selected_role_idx/);
   assert.match(edgeFunction, /chapterGeography/);
   assert.match(edgeFunction, /chapter-login/);
   assert.match(nationalImpactMigration, /drop column if exists mentors_present/);

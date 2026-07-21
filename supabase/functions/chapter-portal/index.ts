@@ -130,14 +130,15 @@ async function getNationalChapterId() {
 
 async function getChapterDashboard(chapterId: string) {
   const now = new Date().toISOString();
-  const [chapterResult, tasksResult, eventsResult, reportsResult, volunteersResult] = await Promise.all([
+  const [chapterResult, tasksResult, eventsResult, reportsResult, volunteersResult, executiveCandidatesResult] = await Promise.all([
     admin.from("chapters").select("id, name, location, contact_name, contact_email, status, is_official, chapter_scope, city, region, school_name").eq("id", chapterId).single(),
     admin.from("tasks").select("id, title, description, due_date, priority, status, completed_at").eq("assigned_chapter_id", chapterId).neq("status", "archived").order("due_date", { ascending: true, nullsFirst: false }),
     admin.from("events").select("id, title, description, starts_at, ends_at, location, link, chapter_id").or(`chapter_id.is.null,chapter_id.eq.${chapterId}`).gte("starts_at", now).order("starts_at", { ascending: true }).limit(10),
     admin.from("weekly_reports").select("id, week_start, sessions_held, students_served, instructional_hours, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").eq("chapter_id", chapterId).order("week_start", { ascending: false }).limit(8),
     admin.from("chapter_volunteers").select("id, full_name, email, phone, role, joined_on, status, notes, created_at, updated_at").eq("chapter_id", chapterId).order("status").order("full_name"),
+    admin.from("chapter_executive_candidates").select("id, chapter_id, volunteer_id, director_role, application_notes, status, interview_at, interview_notes, selected_at, created_at, updated_at").eq("chapter_id", chapterId).order("created_at", { ascending: true }),
   ]);
-  const firstError = [chapterResult.error, tasksResult.error, eventsResult.error, reportsResult.error, volunteersResult.error].find(Boolean);
+  const firstError = [chapterResult.error, tasksResult.error, eventsResult.error, reportsResult.error, volunteersResult.error, executiveCandidatesResult.error].find(Boolean);
   if (firstError) throw firstError;
   const reports = reportsResult.data ?? [];
   let safeReviews: Array<{ report_id: string; status: string; public_feedback: string | null; reviewed_at: string | null }> = [];
@@ -158,11 +159,11 @@ async function getChapterDashboard(chapterId: string) {
       reviewed_at: review?.reviewed_at ?? null,
     };
   });
-  return { chapter: chapterResult.data, tasks: tasksResult.data ?? [], events: eventsResult.data ?? [], reports: chapterReports, volunteers: volunteersResult.data ?? [] };
+  return { chapter: chapterResult.data, tasks: tasksResult.data ?? [], events: eventsResult.data ?? [], reports: chapterReports, volunteers: volunteersResult.data ?? [], executiveCandidates: executiveCandidatesResult.data ?? [] };
 }
 
 async function adminOverview() {
-  const [applications, chapters, reports, reviews, tasks, events, volunteers, nationalImpact] = await Promise.all([
+  const [applications, chapters, reports, reviews, tasks, events, volunteers, executiveCandidates, nationalImpact] = await Promise.all([
     admin.from("chapter_applications").select("id, contact_name, contact_email, contact_phone, additional_contacts, organization_name, location, chapter_scope, city, region, school_name, student_reach, why, status, internal_notes, created_at").order("created_at", { ascending: false }),
     admin.from("chapters").select("id, name, slug, location, chapter_scope, city, region, school_name, contact_name, contact_email, contact_phone, advisor_name, advisor_email, status, access_code_hint, is_official, created_at").order("name"),
     admin.from("weekly_reports").select("id, chapter_id, week_start, sessions_held, students_served, instructional_hours, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").order("week_start", { ascending: false }).limit(200),
@@ -170,9 +171,10 @@ async function adminOverview() {
     admin.from("tasks").select("id, title, description, assigned_chapter_id, due_date, priority, status, completed_at, created_at").order("created_at", { ascending: false }).limit(200),
     admin.from("events").select("id, title, description, starts_at, ends_at, location, link, chapter_id, created_at").order("starts_at", { ascending: true }).limit(100),
     admin.from("chapter_volunteers").select("id, chapter_id, full_name, email, phone, role, joined_on, status, notes, created_at, updated_at").order("created_at", { ascending: false }).limit(500),
+    admin.from("chapter_executive_candidates").select("id, chapter_id, volunteer_id, director_role, application_notes, status, interview_at, interview_notes, selected_at, created_at, updated_at").order("created_at", { ascending: false }).limit(500),
     getNationalImpact(),
   ]);
-  const firstError = [applications.error, chapters.error, reports.error, reviews.error, tasks.error, events.error, volunteers.error].find(Boolean);
+  const firstError = [applications.error, chapters.error, reports.error, reviews.error, tasks.error, events.error, volunteers.error, executiveCandidates.error].find(Boolean);
   if (firstError) throw firstError;
   // Attach each chapter's raw access code for the admin-only overview. Codes live
   // in the private schema and are readable solely via this service-role RPC; the
@@ -187,7 +189,7 @@ async function adminOverview() {
     }
   } catch { /* Codes are a convenience; the overview still loads without them. */ }
   const chapters_with_codes = (chapters.data ?? []).map((chapter) => ({ ...chapter, access_code: codeByChapter.get(chapter.id) ?? null }));
-  return { applications: applications.data ?? [], chapters: chapters_with_codes, reports: reports.data ?? [], reviews: reviews.data ?? [], tasks: tasks.data ?? [], events: events.data ?? [], volunteers: volunteers.data ?? [], nationalImpact };
+  return { applications: applications.data ?? [], chapters: chapters_with_codes, reports: reports.data ?? [], reviews: reviews.data ?? [], tasks: tasks.data ?? [], events: events.data ?? [], volunteers: volunteers.data ?? [], executiveCandidates: executiveCandidates.data ?? [], nationalImpact };
 }
 
 async function provisionUniqueChapterCode(chapterId: string, requestedCode?: unknown) {
@@ -337,6 +339,49 @@ Deno.serve(async (req: Request) => {
       if (!volunteer) return json({ error: "That volunteer could not be found." }, 404);
       if (String(volunteer.role).toLowerCase() === "chapter lead") return json({ error: "The chapter lead cannot be deleted. Mark them inactive instead." }, 400);
       const { error } = await admin.from("chapter_volunteers").delete().eq("id", volunteerId).eq("chapter_id", chapterId);
+      if (error) throw error;
+      return json({ dashboard: await getChapterDashboard(chapterId) });
+    }
+
+    if (action === "chapter-add-executive-candidate") {
+      const chapterId = await currentChapterId(auth.userClient);
+      if (!chapterId) return json({ error: "Your access session has expired. Enter your access code again." }, 401);
+      const candidate = asRecord(body.candidate);
+      const volunteerId = String(candidate.volunteer_id ?? "");
+      const directorRole = String(candidate.director_role ?? "");
+      const applicationNotes = String(candidate.application_notes ?? "").trim().slice(0, 4000);
+      if (!volunteerId || !["events", "marketing", "tutoring"].includes(directorRole)) return json({ error: "Choose a volunteer and director role." }, 400);
+      if (applicationNotes.length < 2) return json({ error: "Add the volunteer’s application statement or qualifications." }, 400);
+      const { data: volunteer, error: volunteerError } = await admin.from("chapter_volunteers").select("id").eq("id", volunteerId).eq("chapter_id", chapterId).eq("status", "active").maybeSingle();
+      if (volunteerError) throw volunteerError;
+      if (!volunteer) return json({ error: "Choose an active volunteer from this chapter." }, 400);
+      const { error } = await admin.from("chapter_executive_candidates").insert({ chapter_id: chapterId, volunteer_id: volunteerId, director_role: directorRole, application_notes: applicationNotes, status: "applied", created_by: auth.user.id });
+      if (error?.code === "23505") return json({ error: "That volunteer already applied for this director role." }, 409);
+      if (error) throw error;
+      return json({ dashboard: await getChapterDashboard(chapterId) });
+    }
+
+    if (action === "chapter-update-executive-candidate") {
+      const chapterId = await currentChapterId(auth.userClient);
+      if (!chapterId) return json({ error: "Your access session has expired. Enter your access code again." }, 401);
+      const candidateId = String(body.candidate_id ?? "");
+      const status = String(body.status ?? "");
+      if (!["applied", "interviewing", "selected", "not_selected"].includes(status)) return json({ error: "Choose a valid application status." }, 400);
+      const { data: candidate, error: lookupError } = await admin.from("chapter_executive_candidates").select("id, director_role").eq("id", candidateId).eq("chapter_id", chapterId).maybeSingle();
+      if (lookupError) throw lookupError;
+      if (!candidate) return json({ error: "That executive-team application could not be found." }, 404);
+      const interviewValue = String(body.interview_at ?? "").trim();
+      let interviewAt: string | null = null;
+      if (interviewValue) {
+        const interviewDate = new Date(interviewValue);
+        if (Number.isNaN(interviewDate.getTime())) return json({ error: "Enter a valid interview date and time." }, 400);
+        interviewAt = interviewDate.toISOString();
+      }
+      if (status === "selected") {
+        const { error: clearError } = await admin.from("chapter_executive_candidates").update({ status: "not_selected", selected_at: null }).eq("chapter_id", chapterId).eq("director_role", candidate.director_role).eq("status", "selected").neq("id", candidateId);
+        if (clearError) throw clearError;
+      }
+      const { error } = await admin.from("chapter_executive_candidates").update({ status, interview_at: interviewAt, interview_notes: String(body.interview_notes ?? "").trim().slice(0, 4000) || null, selected_at: status === "selected" ? new Date().toISOString() : null }).eq("id", candidateId).eq("chapter_id", chapterId);
       if (error) throw error;
       return json({ dashboard: await getChapterDashboard(chapterId) });
     }

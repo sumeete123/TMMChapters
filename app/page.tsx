@@ -56,6 +56,20 @@ type Volunteer = {
   updated_at?: string;
 };
 
+type ExecutiveCandidate = {
+  id: string;
+  chapter_id: string;
+  volunteer_id: string;
+  director_role: "events" | "marketing" | "tutoring";
+  application_notes: string;
+  status: "applied" | "interviewing" | "selected" | "not_selected";
+  interview_at?: string | null;
+  interview_notes?: string | null;
+  selected_at?: string | null;
+  created_at: string;
+  updated_at?: string;
+};
+
 type ChapterEvent = {
   id: string;
   title: string;
@@ -126,13 +140,13 @@ type Application = {
   created_at: string;
 };
 
-type ChapterDashboardData = { chapter: Chapter; tasks: Task[]; events: ChapterEvent[]; reports: Report[]; volunteers: Volunteer[] };
-type AdminData = { applications: Application[]; chapters: Chapter[]; reports: Report[]; reviews: ReportReview[]; tasks: Task[]; events: ChapterEvent[]; volunteers: Volunteer[]; nationalImpact: NationalImpact };
+type ChapterDashboardData = { chapter: Chapter; tasks: Task[]; events: ChapterEvent[]; reports: Report[]; volunteers: Volunteer[]; executiveCandidates: ExecutiveCandidate[] };
+type AdminData = { applications: Application[]; chapters: Chapter[]; reports: Report[]; reviews: ReportReview[]; tasks: Task[]; events: ChapterEvent[]; volunteers: Volunteer[]; executiveCandidates: ExecutiveCandidate[]; nationalImpact: NationalImpact };
 type AdminActionResult = Partial<AdminData> & { code?: string; chapter?: Chapter; overview?: AdminData };
 type IssuedCode = { name: string; code: string; contactName?: string; contactEmail?: string };
 
 const foundingImpact: NationalImpact = { name: "TMM National Chapter", students_impacted: 195, students_taught: 65, students_taught_is_minimum: false, instructional_hours: 36, volunteer_count: 19, session_count: 36, chapter_count: 1, as_of_date: "2026-07-17" };
-const emptyAdmin: AdminData = { applications: [], chapters: [], reports: [], reviews: [], tasks: [], events: [], volunteers: [], nationalImpact: foundingImpact };
+const emptyAdmin: AdminData = { applications: [], chapters: [], reports: [], reviews: [], tasks: [], events: [], volunteers: [], executiveCandidates: [], nationalImpact: foundingImpact };
 const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? "";
 
 declare global {
@@ -526,6 +540,31 @@ export default function Page() {
     finally { setBusy(false); }
   };
 
+  const addExecutiveCandidate = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    setBusy(true);
+    try {
+      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-add-executive-candidate", { candidate: Object.fromEntries(new FormData(formElement)) });
+      setDashboard(result.dashboard);
+      formElement.reset();
+      setMessage("Executive-team application added.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "The application could not be added."); }
+    finally { setBusy(false); }
+  };
+
+  const updateExecutiveCandidate = async (event: FormEvent<HTMLFormElement>, candidate: ExecutiveCandidate) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const form = new FormData(event.currentTarget);
+      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-update-executive-candidate", { candidate_id: candidate.id, ...Object.fromEntries(form) });
+      setDashboard(result.dashboard);
+      setMessage(String(form.get("status")) === "selected" ? "Director selected." : "Application updated.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "The application could not be updated."); }
+    finally { setBusy(false); }
+  };
+
   const loadAdmin = async () => {
     if (!supabase) throw new Error("AUTH_REQUIRED");
     const { data: allowed, error } = await supabase.rpc("is_admin");
@@ -591,7 +630,7 @@ export default function Page() {
 
     {view === "access" && <AccessView onLogin={chapterLogin} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} goTo={goTo} />}
     {view === "apply" && <ApplicationView onSubmit={submitApplication} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} />}
-    {view === "chapter" && dashboard && <ChapterView data={dashboard} onReport={submitReport} onToggleTask={toggleTask} onAddVolunteer={addVolunteer} onUpdateVolunteer={updateVolunteer} onDeleteVolunteer={deleteVolunteer} onLogout={chapterLogout} busy={busy} />}
+    {view === "chapter" && dashboard && <ChapterView data={dashboard} onReport={submitReport} onToggleTask={toggleTask} onAddVolunteer={addVolunteer} onUpdateVolunteer={updateVolunteer} onDeleteVolunteer={deleteVolunteer} onAddExecutiveCandidate={addExecutiveCandidate} onUpdateExecutiveCandidate={updateExecutiveCandidate} onLogout={chapterLogout} busy={busy} />}
     {view === "admin" && <AdminView data={adminData} ready={adminReady} tab={adminTab} setTab={setAdminTab} onLogin={adminLogin} onAction={adminAction} onLogout={adminLogout} issuedCode={issuedCode} setIssuedCode={setIssuedCode} onCaptcha={setCaptchaToken} busy={busy} />}
   </main>;
 }
@@ -644,7 +683,7 @@ function ApplicationView({ onSubmit, busy, authState, authMessage, onCaptcha }: 
   </section>;
 }
 
-function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVolunteer, onDeleteVolunteer, onLogout, busy }: { data: ChapterDashboardData; onReport: (event: FormEvent<HTMLFormElement>) => void; onToggleTask: (task: Task) => void; onAddVolunteer: (event: FormEvent<HTMLFormElement>) => void; onUpdateVolunteer: (volunteer: Volunteer) => void; onDeleteVolunteer: (volunteer: Volunteer) => void; onLogout: () => void; busy: boolean }) {
+function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVolunteer, onDeleteVolunteer, onAddExecutiveCandidate, onUpdateExecutiveCandidate, onLogout, busy }: { data: ChapterDashboardData; onReport: (event: FormEvent<HTMLFormElement>) => void; onToggleTask: (task: Task) => void; onAddVolunteer: (event: FormEvent<HTMLFormElement>) => void; onUpdateVolunteer: (volunteer: Volunteer) => void; onDeleteVolunteer: (volunteer: Volunteer) => void; onAddExecutiveCandidate: (event: FormEvent<HTMLFormElement>) => void; onUpdateExecutiveCandidate: (event: FormEvent<HTMLFormElement>, candidate: ExecutiveCandidate) => void; onLogout: () => void; busy: boolean }) {
   const [showCompleted, setShowCompleted] = useState(false);
   const [showInactiveVolunteers, setShowInactiveVolunteers] = useState(false);
   const latest = data.reports[0];
@@ -656,6 +695,9 @@ function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVol
   const inactiveVolunteers = data.volunteers.filter((volunteer) => volunteer.status === "inactive");
   const visibleTasks = showCompleted ? [...openTasks, ...completedTasks] : openTasks;
   const visibleVolunteers = showInactiveVolunteers ? data.volunteers : activeVolunteers;
+  const directorRoles = [{ key: "events", label: "Director of Events" }, { key: "marketing", label: "Director of Marketing" }, { key: "tutoring", label: "Director of Tutoring" }] as const;
+  const selectedDirectors = data.executiveCandidates.filter((candidate) => candidate.status === "selected");
+  const volunteerById = new Map(data.volunteers.map((volunteer) => [volunteer.id, volunteer]));
   const chapterStudents = data.reports.reduce((sum, report) => sum + report.students_served, 0);
   const chapterSessions = data.reports.reduce((sum, report) => sum + report.sessions_held, 0);
   const chapterHours = data.reports.reduce((sum, report) => sum + Number(report.instructional_hours), 0);
@@ -676,7 +718,7 @@ function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVol
   return <section className="workspace">
     <aside className="sidebar">
       <div><span className="tiny-label">Current chapter</span><h2>{data.chapter.name}</h2><p>{data.chapter.location}</p></div>
-      <nav><a href="#home">Home</a><a href="#notifications">Notifications <b>{notifications.length}</b></a><a href="#tasks">Assignments {openTasks.length > 0 && <b>{openTasks.length}</b>}</a><a href="#events">Calendar</a><a href="#volunteers">Volunteers <b>{activeVolunteers.length}</b></a><a href="#history">Report history</a><a href="#weekly">Weekly report</a></nav>
+      <nav><a href="#home">Home</a><a href="#notifications">Notifications <b>{notifications.length}</b></a><a href="#tasks">Assignments {openTasks.length > 0 && <b>{openTasks.length}</b>}</a><a href="#events">Calendar</a><a href="#volunteers">Volunteers <b>{activeVolunteers.length}</b></a><a href="#executive-team">Executive team <b>{selectedDirectors.length}/3</b></a><a href="#history">Report history</a><a href="#weekly">Weekly report</a></nav>
       <button className="sidebar-action" onClick={onLogout}>Sign out chapter</button>
     </aside>
     <div className="workspace-content" id="home">
@@ -720,6 +762,13 @@ function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVol
         <div className="section-title"><div><span className="section-kicker">People directory</span><h2>Chapter volunteers</h2><p>Active people stay visible. Inactive records are hidden until you need them.</p></div><div className="section-controls"><span className="notification-count">{activeVolunteers.length} active</span>{inactiveVolunteers.length > 0 && <button className="visibility-toggle" onClick={() => setShowInactiveVolunteers((value) => !value)}>{showInactiveVolunteers ? "Hide inactive" : `Show ${inactiveVolunteers.length} inactive`}</button>}</div></div>
         {visibleVolunteers.length ? <div className="volunteer-list">{[...visibleVolunteers].sort((a, b) => Number(a.status === "inactive") - Number(b.status === "inactive") || a.full_name.localeCompare(b.full_name)).map((volunteer) => <article className={`volunteer-row ${volunteer.status}`} key={volunteer.id}><span className="volunteer-avatar" aria-hidden="true">{volunteer.full_name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase()}</span><div><strong>{volunteer.full_name}</strong><small>{volunteer.role} · Joined {new Date(`${volunteer.joined_on}T12:00:00`).toLocaleDateString()}</small></div><div className="volunteer-contact">{volunteer.email ? <a href={`mailto:${volunteer.email}`}>{volunteer.email}</a> : <span>No email</span>}{volunteer.phone && <span>{volunteer.phone}</span>}</div><div className="volunteer-actions"><Status value={volunteer.status} /><Button kind="quiet" disabled={busy} onClick={() => onUpdateVolunteer(volunteer)}>{volunteer.status === "active" ? "Mark inactive" : "Reactivate"}</Button>{volunteer.role.toLowerCase() !== "chapter lead" && <Button kind="danger" disabled={busy} onClick={() => onDeleteVolunteer(volunteer)}>Delete</Button>}</div></article>)}</div> : <Empty text={inactiveVolunteers.length ? "No active volunteers. Use Show inactive to view older records." : "No volunteers have been added yet."} />}
         <details className="disclosure-form"><summary><span><strong>Add a volunteer</strong><small>Open the form only when someone joins.</small></span><b>＋</b></summary><div className="inline-form-zone"><div><span className="section-kicker">Add someone</span><h3>New volunteer</h3><p>Add each new person as they join so TMM can track chapter growth.</p></div><form className="volunteer-form" onSubmit={onAddVolunteer}><div className="form-grid four"><Field label="Full name"><input name="full_name" required /></Field><Field label="Email"><input name="email" type="email" /></Field><Field label="Phone"><input name="phone" type="tel" /></Field><Field label="Role"><input name="role" defaultValue="Volunteer" placeholder="Volunteer, mentor…" required /></Field></div><div className="form-grid"><Field label="Joined on"><input name="joined_on" type="date" defaultValue={new Date().toISOString().slice(0, 10)} required /></Field><Field label="Notes"><input name="notes" placeholder="Optional skills, availability, or context" /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Add volunteer"}</Button></div></form></div></details>
+      </section>
+      <section className="work-section executive-team-section" id="executive-team">
+        <div className="section-title"><div><span className="section-kicker">Leadership pipeline</span><h2>Chapter executive team</h2><p>Invite your hardest-working volunteers to apply, interview them, and select one director for each role.</p></div><span className="notification-count">{selectedDirectors.length} of 3 selected</span></div>
+        <div className="director-grid">{directorRoles.map((role) => { const selected = data.executiveCandidates.find((candidate) => candidate.director_role === role.key && candidate.status === "selected"); const volunteer = selected ? volunteerById.get(selected.volunteer_id) : null; return <article className={selected ? "director-seat filled" : "director-seat"} key={role.key}><span>{role.label}</span>{volunteer ? <><strong>{volunteer.full_name}</strong><small>Selected {selected?.selected_at ? new Date(selected.selected_at).toLocaleDateString() : "recently"}</small></> : <><strong>Open role</strong><small>Review applications below</small></>}</article>; })}</div>
+        <div className="executive-workflow"><div><span>1</span><strong>Invite applications</strong><small>Start with volunteers who consistently follow through.</small></div><div><span>2</span><strong>Interview candidates</strong><small>Record the date and your decision notes.</small></div><div><span>3</span><strong>Select directors</strong><small>Appoint one person to each leadership role.</small></div></div>
+        <details className="disclosure-form"><summary><span><strong>Add an application</strong><small>Choose an active volunteer and the role they want.</small></span><b>＋</b></summary><form className="surface-form compact disclosure-content" onSubmit={onAddExecutiveCandidate}><div className="form-grid three"><Field label="Volunteer"><select name="volunteer_id" required defaultValue=""><option value="" disabled>Select a volunteer</option>{activeVolunteers.map((volunteer) => <option value={volunteer.id} key={volunteer.id}>{volunteer.full_name}</option>)}</select></Field><Field label="Applying for"><select name="director_role" required defaultValue=""><option value="" disabled>Select a role</option>{directorRoles.map((role) => <option value={role.key} key={role.key}>{role.label}</option>)}</select></Field><Field label="Application statement / qualifications"><textarea name="application_notes" rows={3} placeholder="Why is this volunteer a strong fit?" required /></Field></div><div className="align-right"><Button type="submit" disabled={busy || activeVolunteers.length === 0}>{busy ? "Saving…" : "Add application"}</Button></div></form></details>
+        <div className="candidate-list">{data.executiveCandidates.length ? data.executiveCandidates.map((candidate) => { const volunteer = volunteerById.get(candidate.volunteer_id); const role = directorRoles.find((item) => item.key === candidate.director_role); return <article className="candidate-card" key={candidate.id}><div className="candidate-heading"><div><span className="section-kicker">{role?.label}</span><h3>{volunteer?.full_name ?? "Former volunteer"}</h3><p>{candidate.application_notes}</p></div><Status value={candidate.status} /></div><form onSubmit={(event) => onUpdateExecutiveCandidate(event, candidate)}><div className="form-grid three"><Field label="Application status"><select name="status" defaultValue={candidate.status}><option value="applied">Applied</option><option value="interviewing">Interviewing</option><option value="selected">Selected as director</option><option value="not_selected">Not selected</option></select></Field><Field label="Interview date and time"><input name="interview_at" type="datetime-local" defaultValue={candidate.interview_at ? new Date(candidate.interview_at).toISOString().slice(0, 16) : ""} /></Field><Field label="Interview notes"><textarea name="interview_notes" rows={3} defaultValue={candidate.interview_notes ?? ""} placeholder="Strengths, availability, follow-up, decision…" /></Field></div><div className="align-right"><Button type="submit" kind="secondary" disabled={busy}>Save application</Button></div></form></article>; }) : <Empty text="No executive-team applications yet. Start with the volunteers who have shown the strongest work ethic and follow-through." />}</div>
       </section>
       <section className="work-section" id="history"><div className="section-title"><div><span className="section-kicker">Your record</span><h2>Report history</h2><p>Submission and review status for recent weeks. Private TMM ratings are never shown here.</p></div></div>{data.reports.length ? <div className="simple-table five"><div className="table-head"><span>Week</span><span>Sessions</span><span>Students</span><span>Tasks done</span><span>Status</span></div>{data.reports.map((report) => <div className="table-row" key={report.id}><span>{new Date(`${report.week_start}T12:00:00`).toLocaleDateString()}</span><span>{report.sessions_held}</span><span>{report.students_served}</span><span>{report.completed_weekly_tasks ? "Yes" : "No"}</span><span>{reviewLabel(report.review_status)}</span></div>)}</div> : <Empty text="No weekly reports yet. Your first report will appear here after you submit it." />}</section>
 
@@ -883,12 +932,13 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
 
       {tab === "chapters" && <>
         <section className="admin-section">
-          <div className="section-title"><div><span className="section-kicker">Network directory</span><h2>All chapters</h2><p>Contacts, volunteers, weekly reporting status, and secure code management. The official National Chapter is included here and managed by administrators.</p></div></div>
+          <div className="section-title"><div><span className="section-kicker">Network directory</span><h2>All chapters</h2><p>Contacts, volunteers, executive teams, weekly reporting status, and secure code management. The official National Chapter is included here and managed by administrators.</p></div></div>
           {data.chapters.length ? <div className="chapter-list">{data.chapters.map((chapter) => {
             const report = latestReport.get(chapter.id);
             const volunteers = data.volunteers.filter((volunteer) => volunteer.chapter_id === chapter.id && volunteer.status === "active").length;
+            const directors = data.executiveCandidates.filter((candidate) => candidate.chapter_id === chapter.id && candidate.status === "selected").length;
             return <article className={`chapter-row ${chapter.is_official ? "official" : ""}`} key={chapter.id}>
-              <div><strong>{chapter.name}</strong><span>{chapter.is_official ? "Official National Chapter" : chapter.chapter_scope === "school" ? "North Carolina school chapter" : "Regional city chapter"} · {chapter.location} · {volunteers} active volunteer{volunteers === 1 ? "" : "s"}</span></div>
+              <div><strong>{chapter.name}</strong><span>{chapter.is_official ? "Official National Chapter" : chapter.chapter_scope === "school" ? "North Carolina school chapter" : "Regional city chapter"} · {chapter.location} · {volunteers} active volunteer{volunteers === 1 ? "" : "s"} · Executive team {directors}/3</span></div>
               <div><span>{chapter.contact_name}</span><a href={`mailto:${chapter.contact_email}`}>{chapter.contact_email}</a>{chapter.contact_phone && <span>{chapter.contact_phone}</span>}</div>
               <div><span>Latest report</span><strong className="plain-strong">{report ? new Date(`${report.week_start}T12:00:00`).toLocaleDateString() : "Not submitted"}</strong></div>
               <div className="chapter-row-end">{chapter.is_official ? <><span className="status status-approved">Official · admin only</span><Button kind="secondary" onClick={openNationalReport}>Weekly report</Button></> : <><Status value={chapter.status} /><span className="code-hint">Code <code>{chapter.access_code ?? (chapter.access_code_hint ? `••••${chapter.access_code_hint}` : "—")}</code></span>{chapter.access_code && <Button kind="quiet" disabled={busy} onClick={() => navigator.clipboard.writeText(chapter.access_code!)}>Copy</Button>}<Button kind="secondary" disabled={busy} onClick={() => onAction("admin-reset-code", { chapter_id: chapter.id }, chapter.name)}>Reset code</Button></>}</div>
