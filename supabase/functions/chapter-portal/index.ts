@@ -128,6 +128,18 @@ async function getNationalChapterId() {
   return data.id as string;
 }
 
+async function attachEventPhotoUrls(records: Array<Record<string, unknown>>) {
+  const paths = records.flatMap((record) => Array.isArray(record.photo_paths) ? record.photo_paths.filter((path): path is string => typeof path === "string") : []);
+  if (!paths.length) return records.map((record) => ({ ...record, photo_urls: [] }));
+  const { data, error } = await admin.storage.from("chapter-event-photos").createSignedUrls(paths, 3600);
+  if (error) throw error;
+  const urlByPath = new Map((data ?? []).filter((item) => item.signedUrl).map((item) => [item.path, item.signedUrl]));
+  return records.map((record) => ({
+    ...record,
+    photo_urls: (Array.isArray(record.photo_paths) ? record.photo_paths : []).map((path) => urlByPath.get(String(path))).filter(Boolean),
+  }));
+}
+
 async function getChapterDashboard(chapterId: string) {
   const now = new Date().toISOString();
   const [chapterResult, tasksResult, eventsResult, reportsResult, volunteersResult, executiveMembersResult, demotionRequestsResult, eventRecordsResult] = await Promise.all([
@@ -138,7 +150,7 @@ async function getChapterDashboard(chapterId: string) {
     admin.from("chapter_volunteers").select("id, full_name, email, phone, role, joined_on, status, notes, created_at, updated_at").eq("chapter_id", chapterId).order("status").order("full_name"),
     admin.from("chapter_executive_members").select("id, chapter_id, volunteer_id, director_role, appointed_on, notes, status, ended_at, created_at, updated_at").eq("chapter_id", chapterId).order("appointed_on", { ascending: false }),
     admin.from("chapter_demotion_requests").select("id, chapter_id, executive_member_id, executive_member_name, current_position, reason, previous_attempts, relevant_documentation, proposed_replacement, status, admin_response, submitted_at, reviewed_at, updated_at").eq("chapter_id", chapterId).order("submitted_at", { ascending: false }),
-    admin.from("chapter_event_records").select("id, chapter_id, title, event_date, event_type, location, attendees, summary, outcomes, documentation_url, created_at, updated_at").eq("chapter_id", chapterId).order("event_date", { ascending: false }).limit(100),
+    admin.from("chapter_event_records").select("id, chapter_id, title, event_date, event_type, location, attendees, summary, outcomes, documentation_url, photo_paths, created_at, updated_at").eq("chapter_id", chapterId).order("event_date", { ascending: false }).limit(100),
   ]);
   const firstError = [chapterResult.error, tasksResult.error, eventsResult.error, reportsResult.error, volunteersResult.error, executiveMembersResult.error, demotionRequestsResult.error, eventRecordsResult.error].find(Boolean);
   if (firstError) throw firstError;
@@ -161,7 +173,8 @@ async function getChapterDashboard(chapterId: string) {
       reviewed_at: review?.reviewed_at ?? null,
     };
   });
-  return { chapter: chapterResult.data, tasks: tasksResult.data ?? [], events: eventsResult.data ?? [], reports: chapterReports, volunteers: volunteersResult.data ?? [], executiveMembers: executiveMembersResult.data ?? [], demotionRequests: demotionRequestsResult.data ?? [], eventRecords: eventRecordsResult.data ?? [] };
+  const eventRecords = await attachEventPhotoUrls((eventRecordsResult.data ?? []) as Array<Record<string, unknown>>);
+  return { chapter: chapterResult.data, tasks: tasksResult.data ?? [], events: eventsResult.data ?? [], reports: chapterReports, volunteers: volunteersResult.data ?? [], executiveMembers: executiveMembersResult.data ?? [], demotionRequests: demotionRequestsResult.data ?? [], eventRecords };
 }
 
 async function adminOverview() {
@@ -175,7 +188,7 @@ async function adminOverview() {
     admin.from("chapter_volunteers").select("id, chapter_id, full_name, email, phone, role, joined_on, status, notes, created_at, updated_at").order("created_at", { ascending: false }).limit(500),
     admin.from("chapter_executive_members").select("id, chapter_id, volunteer_id, director_role, appointed_on, notes, status, ended_at, created_at, updated_at").order("created_at", { ascending: false }).limit(500),
     admin.from("chapter_demotion_requests").select("id, chapter_id, executive_member_id, executive_member_name, current_position, reason, previous_attempts, relevant_documentation, proposed_replacement, status, admin_response, submitted_at, reviewed_at, updated_at").order("submitted_at", { ascending: false }).limit(500),
-    admin.from("chapter_event_records").select("id, chapter_id, title, event_date, event_type, location, attendees, summary, outcomes, documentation_url, created_at, updated_at").order("event_date", { ascending: false }).limit(500),
+    admin.from("chapter_event_records").select("id, chapter_id, title, event_date, event_type, location, attendees, summary, outcomes, documentation_url, photo_paths, created_at, updated_at").order("event_date", { ascending: false }).limit(500),
     getNationalImpact(),
   ]);
   const firstError = [applications.error, chapters.error, reports.error, reviews.error, tasks.error, events.error, volunteers.error, executiveMembers.error, demotionRequests.error, eventRecords.error].find(Boolean);
@@ -391,13 +404,15 @@ Deno.serve(async (req: Request) => {
       const title = String(record.title ?? "").trim().slice(0, 160);
       const summary = String(record.summary ?? "").trim().slice(0, 4000);
       const documentationUrl = String(record.documentation_url ?? "").trim().slice(0, 2048);
+      const photoPaths = Array.isArray(record.photo_paths) ? record.photo_paths.filter((path): path is string => typeof path === "string").slice(0, 7) : [];
       if (title.length < 2 || summary.length < 2 || attendees === null) return json({ error: "Add the event title, attendance, and a short summary." }, 400);
+      if (photoPaths.length > 6 || photoPaths.some((path) => !path.startsWith(`${chapterId}/`) || path.length > 500)) return json({ error: "Upload up to six valid event photos." }, 400);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(String(record.event_date ?? ""))) return json({ error: "Choose a valid event date." }, 400);
       if (documentationUrl) {
         try { if (!["https:", "http:"].includes(new URL(documentationUrl).protocol)) throw new Error(); }
         catch { return json({ error: "Use a valid http or https documentation link." }, 400); }
       }
-      const { error } = await admin.from("chapter_event_records").insert({ chapter_id: chapterId, title, event_date: String(record.event_date), event_type: String(record.event_type ?? "Chapter event").trim().slice(0, 80), location: String(record.location ?? "").trim().slice(0, 240) || null, attendees, summary, outcomes: String(record.outcomes ?? "").trim().slice(0, 4000) || null, documentation_url: documentationUrl || null, created_by: auth.user.id });
+      const { error } = await admin.from("chapter_event_records").insert({ chapter_id: chapterId, title, event_date: String(record.event_date), event_type: String(record.event_type ?? "Chapter event").trim().slice(0, 80), location: String(record.location ?? "").trim().slice(0, 240) || null, attendees, summary, outcomes: String(record.outcomes ?? "").trim().slice(0, 4000) || null, documentation_url: documentationUrl || null, photo_paths: photoPaths, created_by: auth.user.id });
       if (error) throw error;
       return json({ dashboard: await getChapterDashboard(chapterId) });
     }
@@ -405,7 +420,15 @@ Deno.serve(async (req: Request) => {
     if (action === "chapter-delete-event-record") {
       const chapterId = await currentChapterId(auth.userClient);
       if (!chapterId) return json({ error: "Your access session has expired. Enter your access code again." }, 401);
-      const { error } = await admin.from("chapter_event_records").delete().eq("id", String(body.record_id ?? "")).eq("chapter_id", chapterId);
+      const recordId = String(body.record_id ?? "");
+      const { data: record, error: lookupError } = await admin.from("chapter_event_records").select("id, photo_paths").eq("id", recordId).eq("chapter_id", chapterId).maybeSingle();
+      if (lookupError) throw lookupError;
+      if (!record) return json({ error: "That event record could not be found." }, 404);
+      if (Array.isArray(record.photo_paths) && record.photo_paths.length) {
+        const { error: storageError } = await admin.storage.from("chapter-event-photos").remove(record.photo_paths);
+        if (storageError) throw storageError;
+      }
+      const { error } = await admin.from("chapter_event_records").delete().eq("id", recordId).eq("chapter_id", chapterId);
       if (error) throw error;
       return json({ dashboard: await getChapterDashboard(chapterId) });
     }
