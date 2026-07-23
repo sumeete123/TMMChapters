@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
-async function render() {
+async function render(path = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("http://localhost/", { headers: { accept: "text/html" } }),
+    new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }),
     { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
     { waitUntil() {}, passThroughOnException() {} },
   );
@@ -29,9 +29,23 @@ test("server-renders the chapter operations homepage", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
+test("server-renders the terms and privacy policy", async () => {
+  const response = await render("/legal");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /Terms of Service/i);
+  assert.match(html, /Privacy Policy/i);
+  assert.match(html, /Last updated July 23, 2026/i);
+  assert.match(html, /We do not sell personal information/i);
+  assert.match(html, /Children under 13/i);
+  assert.match(html, /parent or legal guardian/i);
+  assert.match(html, /themasterymentors@gmail\.com/i);
+});
+
 test("keeps the finished site free of starter-only infrastructure", async () => {
-  const [page, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, geographyMigration, executiveTeamMigration, chapterOperationsMigration, eventPhotosMigration, nextConfig, worker, packageJson] = await Promise.all([
+  const [page, legalPage, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, geographyMigration, executiveTeamMigration, chapterOperationsMigration, eventPhotosMigration, nextConfig, worker, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/legal/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../supabase/functions/chapter-portal/index.ts", import.meta.url), "utf8"),
@@ -91,6 +105,12 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /One chapter per school/);
   assert.match(page, /One chapter per city/);
   assert.match(page, /Regional city chapter/);
+  assert.match(page, /name="legal_consent"/);
+  assert.match(page, /href="\/legal"/);
+  assert.match(legalPage, /event photos/i);
+  assert.match(legalPage, /service providers/i);
+  assert.match(legalPage, /do not sell personal information/i);
+  assert.match(legalPage, /verifiable permission from a parent or legal guardian/i);
   assert.doesNotMatch(page, /function NationalImpactCard/);
   assert.doesNotMatch(css, /\.national-impact-card/);
   assert.match(edgeFunction, /weekly_reports/);

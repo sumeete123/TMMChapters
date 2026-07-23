@@ -702,6 +702,7 @@ export default function Page() {
       <button className="brand" onClick={() => goTo("access")}><Logo /><span>The Mastery Mentors</span><small>Chapters</small></button>
       <div className="topbar-actions">
         {view !== "chapter" && view !== "admin" && <button className="nav-link" onClick={() => goTo(view === "apply" ? "access" : "apply")}>{view === "apply" ? "Chapter access" : "Apply for a chapter"}</button>}
+        <a className="nav-link" href="/legal">Terms &amp; privacy</a>
         <button className="theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label={`Use ${theme === "light" ? "dark" : "light"} mode`}><span>{theme === "light" ? "☾" : "☀"}</span></button>
       </div>
     </header>
@@ -756,6 +757,10 @@ function ApplicationView({ onSubmit, busy, authState, authMessage, onCaptcha }: 
       </div>
       <section className="people-builder"><div className="people-builder-heading"><div><h2>Additional team members</h2><p>Add co-leads, officers, or volunteers who are joining with the primary lead.</p></div><Button type="button" kind="secondary" onClick={() => setAdditionalPeople((people) => [...people, crypto.randomUUID()])}>Add another person</Button></div>{additionalPeople.length ? <div className="people-stack">{additionalPeople.map((person, index) => <div className="person-row" key={person}><div className="person-row-heading"><strong>Person {index + 2}</strong><button type="button" onClick={() => setAdditionalPeople((people) => people.filter((id) => id !== person))}>Remove</button></div><div className="form-grid four"><Field label="Full name"><input name="additional_name" minLength={2} maxLength={120} required /></Field><Field label="Email"><input name="additional_email" type="email" maxLength={254} /></Field><Field label="Phone"><input name="additional_phone" type="tel" maxLength={40} /></Field><Field label="Role"><input name="additional_role" maxLength={80} placeholder="Co-lead, volunteer…" defaultValue="Volunteer" /></Field></div></div>)}</div> : <p className="people-empty">Only one person? You can continue without adding anyone else.</p>}</section>
       <Field label="Why do you want to start this chapter?"><textarea name="why" rows={5} maxLength={5000} required /></Field>
+      <label className="legal-consent">
+        <input type="checkbox" name="legal_consent" required />
+        <span>I have read and agree to the <a href="/legal" target="_blank" rel="noreferrer">Terms of Service &amp; Privacy Policy</a>, and I confirm that I am authorized to submit this information.</span>
+      </label>
       {turnstileSiteKey && authState !== "ready" && <TurnstileChallenge onToken={onCaptcha} />}
       {authMessage && <p className={`access-state ${authState}`}>{authMessage}</p>}
       <div className="form-footer"><p>Applications are reviewed manually. Approved chapters receive a private access code.</p><Button type="submit" disabled={busy || authState !== "ready"}>{busy ? "Sending…" : authState === "loading" ? "Preparing secure form…" : "Send application"}</Button></div>
