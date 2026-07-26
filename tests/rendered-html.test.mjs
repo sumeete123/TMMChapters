@@ -43,7 +43,7 @@ test("server-renders the terms and privacy policy", async () => {
 });
 
 test("keeps the finished site free of starter-only infrastructure", async () => {
-  const [page, legalPage, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, geographyMigration, executiveTeamMigration, chapterOperationsMigration, eventPhotosMigration, nextConfig, worker, packageJson] = await Promise.all([
+  const [page, legalPage, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, geographyMigration, executiveTeamMigration, chapterOperationsMigration, eventPhotosMigration, nextConfig, securityHeaders, worker, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/legal/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -58,6 +58,7 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
     readFile(new URL("../supabase/migrations/20260721161606_executive_board_demotions_and_event_logs.sql", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260721172048_chapter_event_photos.sql", import.meta.url), "utf8"),
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/security-headers.ts", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
@@ -167,8 +168,16 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(nationalImpactMigration, /drop column if exists mentors_present/);
   assert.doesNotMatch(page, /mentors_present|Mentor attendances/);
   assert.doesNotMatch(edgeFunction, /mentors_present/);
-  assert.match(nextConfig, /Content-Security-Policy/);
-  assert.match(nextConfig, /frame-ancestors 'none'/);
+  // Both build targets must source their headers from the one shared module,
+  // so the policy cannot drift between the Vercel and Cloudflare deployments.
+  assert.match(nextConfig, /securityHeaders/);
+  assert.match(worker, /securityHeaders/);
+  assert.match(securityHeaders, /Content-Security-Policy/);
+  assert.match(securityHeaders, /frame-ancestors 'none'/);
+  assert.match(securityHeaders, /frame-src https:\/\/challenges\.cloudflare\.com/);
+  // Event photos are private signed Supabase URLs; img-src must allow that
+  // origin or every chapter event photo is blocked by the CSP.
+  assert.match(securityHeaders, /img-src[^;]*\$\{SUPABASE_ORIGIN\}/);
   assert.match(worker, /secureResponse/);
   assert.doesNotMatch(css, /Cormorant Garamond/);
   assert.match(packageJson, /@supabase\/supabase-js/);

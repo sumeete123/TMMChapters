@@ -1,6 +1,7 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { securityHeaders } from "../lib/security-headers";
 
 interface Env {
   ASSETS: Fetcher;
@@ -19,29 +20,9 @@ interface ExecutionContext {
   passThroughOnException(): void;
 }
 
-const contentSecurityPolicy = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' data: https://fonts.gstatic.com",
-  "img-src 'self' data: blob:",
-  "connect-src 'self' https://fvkkamxonsygjlhabsqb.supabase.co wss://fvkkamxonsygjlhabsqb.supabase.co https://challenges.cloudflare.com",
-  "frame-src https://challenges.cloudflare.com",
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-  "upgrade-insecure-requests",
-].join("; ");
-
 function secureResponse(response: Response) {
   const secured = new Response(response.body, response);
-  secured.headers.set("Content-Security-Policy", contentSecurityPolicy);
-  secured.headers.set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
-  secured.headers.set("X-Content-Type-Options", "nosniff");
-  secured.headers.set("Referrer-Policy", "no-referrer");
-  secured.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-  secured.headers.set("Cross-Origin-Opener-Policy", "same-origin");
+  for (const { key, value } of securityHeaders) secured.headers.set(key, value);
   return secured;
 }
 
