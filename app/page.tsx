@@ -15,6 +15,9 @@ const CHAPTER_SETUP_GUIDE_URL = "https://docs.google.com/document/d/1YVnkXYF1WHy
 const CHAPTER_OPERATIONS_GUIDE_URL = "https://docs.google.com/document/d/1hgxSoDHWPXDa6twMTREy772fba_G6dborm01ajz_O5g/edit?tab=t.0#heading=h.pr0guz6cdj1x";
 const TEAM_BUILDING_GUIDE_URL = "https://docs.google.com/document/d/1EVU2OHy8osrfLhzwi5QcwwPmTdINV9Luu4DgaLGot50/edit?tab=t.0";
 
+// Must stay in sync with the chapter_applications_contact_grade check constraint.
+const GRADE_OPTIONS = ["6th grade", "7th grade", "8th grade", "9th grade", "10th grade", "11th grade", "12th grade", "College", "Not currently a student"];
+
 type Chapter = {
   id: string;
   name: string;
@@ -163,6 +166,7 @@ type Application = {
   contact_name: string;
   contact_email: string;
   contact_phone?: string | null;
+  contact_grade?: string | null;
   additional_contacts?: Array<{ full_name: string; email?: string; phone?: string; role?: string }>;
   organization_name: string;
   location: string;
@@ -471,6 +475,7 @@ export default function Page() {
       contact_name: String(form.get("contact_name") ?? "").trim().slice(0, 120),
       contact_email: String(form.get("contact_email") ?? "").trim().toLowerCase().slice(0, 254),
       contact_phone: String(form.get("contact_phone") ?? "").trim().slice(0, 40),
+      contact_grade: String(form.get("contact_grade") ?? "").trim().slice(0, 40),
       organization_name: String(form.get("chapter_scope")) === "school"
         ? String(form.get("school_name") ?? "").trim().slice(0, 160)
         : `${String(form.get("city") ?? "").trim().slice(0, 120)} Chapter`,
@@ -749,6 +754,7 @@ function ApplicationView({ onSubmit, busy, authState, authMessage, onCaptcha }: 
         <Field label="Primary lead name"><input name="contact_name" minLength={2} maxLength={120} required /></Field>
         <Field label="Primary lead email"><input name="contact_email" type="email" maxLength={254} required /></Field>
         <Field label="Primary lead phone"><input name="contact_phone" type="tel" maxLength={40} required /></Field>
+        <Field label="What grade are you in?" hint="The grade the primary lead is in right now."><select name="contact_grade" required defaultValue=""><option value="" disabled>Select one</option>{GRADE_OPTIONS.map((grade) => <option key={grade}>{grade}</option>)}</select></Field>
         <Field label="City"><input name="city" minLength={2} maxLength={120} placeholder={chapterScope === "school" ? "Raleigh" : "Carmel"} required /></Field>
         {chapterScope === "school"
           ? <><input type="hidden" name="region" value="North Carolina" /><Field label="School name" hint="The chapter will use this school’s name."><input name="school_name" minLength={2} maxLength={160} placeholder="School name" required /></Field></>
@@ -997,7 +1003,7 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
         </div></details>
       </>}
 
-      {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Open applications stay visible. Approved and declined records are hidden by default.</p></div>{closedApplications.length > 0 && <button className="visibility-toggle" onClick={() => setShowClosedApplications((value) => !value)}>{showClosedApplications ? "Hide closed" : `Show ${closedApplications.length} closed`}</button>}</div><div className="application-list">{visibleApplications.length ? visibleApplications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>{application.chapter_scope === "school" ? "North Carolina school chapter" : "Regional city chapter"}</span><span>Primary lead: {application.contact_name}</span><a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.additional_contacts?.length ? <div className="applicant-team"><span className="section-kicker">Additional team members</span>{application.additional_contacts.map((contact, index) => <div key={`${contact.email}-${index}`}><strong>{contact.full_name}</strong><span>{contact.role || "Volunteer"}</span>{contact.email && <a href={`mailto:${contact.email}`}>{contact.email}</a>}{contact.phone && <span>{contact.phone}</span>}</div>)}</div> : null}{application.why && <p>{application.why}</p>}<div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & prepare email</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}{application.status === "declined" && <Button kind="danger" disabled={busy} onClick={() => window.confirm(`Permanently delete the declined application from ${application.organization_name}?`) && onAction("admin-delete-application", { application_id: application.id })}>Delete</Button>}</div></article>) : <Empty text={closedApplications.length ? "No applications need a decision. Use Show closed to view older records." : "No applications yet."} />}</div></section>}
+      {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Open applications stay visible. Approved and declined records are hidden by default.</p></div>{closedApplications.length > 0 && <button className="visibility-toggle" onClick={() => setShowClosedApplications((value) => !value)}>{showClosedApplications ? "Hide closed" : `Show ${closedApplications.length} closed`}</button>}</div><div className="application-list">{visibleApplications.length ? visibleApplications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>{application.chapter_scope === "school" ? "North Carolina school chapter" : "Regional city chapter"}</span><span>Primary lead: {application.contact_name}</span>{application.contact_grade && <span>Grade: {application.contact_grade}</span>}<a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.additional_contacts?.length ? <div className="applicant-team"><span className="section-kicker">Additional team members</span>{application.additional_contacts.map((contact, index) => <div key={`${contact.email}-${index}`}><strong>{contact.full_name}</strong><span>{contact.role || "Volunteer"}</span>{contact.email && <a href={`mailto:${contact.email}`}>{contact.email}</a>}{contact.phone && <span>{contact.phone}</span>}</div>)}</div> : null}{application.why && <p>{application.why}</p>}<div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & prepare email</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}{application.status === "declined" && <Button kind="danger" disabled={busy} onClick={() => window.confirm(`Permanently delete the declined application from ${application.organization_name}?`) && onAction("admin-delete-application", { application_id: application.id })}>Delete</Button>}</div></article>) : <Empty text={closedApplications.length ? "No applications need a decision. Use Show closed to view older records." : "No applications yet."} />}</div></section>}
 
       {tab === "reviews" && <>
         <div className="metric-strip admin-metrics">

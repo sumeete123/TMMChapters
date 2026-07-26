@@ -179,7 +179,7 @@ async function getChapterDashboard(chapterId: string) {
 
 async function adminOverview() {
   const [applications, chapters, reports, reviews, tasks, events, volunteers, executiveMembers, demotionRequests, eventRecords, nationalImpact] = await Promise.all([
-    admin.from("chapter_applications").select("id, contact_name, contact_email, contact_phone, additional_contacts, organization_name, location, chapter_scope, city, region, school_name, student_reach, why, status, internal_notes, created_at").order("created_at", { ascending: false }),
+    admin.from("chapter_applications").select("id, contact_name, contact_email, contact_phone, contact_grade, additional_contacts, organization_name, location, chapter_scope, city, region, school_name, student_reach, why, status, internal_notes, created_at").order("created_at", { ascending: false }),
     admin.from("chapters").select("id, name, slug, location, chapter_scope, city, region, school_name, contact_name, contact_email, contact_phone, advisor_name, advisor_email, status, access_code_hint, is_official, created_at").order("name"),
     admin.from("weekly_reports").select("id, chapter_id, week_start, sessions_held, students_served, instructional_hours, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").order("week_start", { ascending: false }).limit(200),
     admin.from("weekly_report_reviews").select("report_id, status, rating, private_notes, public_feedback, reviewed_at, reviewed_by, updated_at").order("updated_at", { ascending: false }).limit(200),
