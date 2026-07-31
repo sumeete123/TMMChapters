@@ -633,6 +633,62 @@ Deno.serve(async (req: Request) => {
       return json({ code, overview: await adminOverview() });
     }
 
+    if (action === "admin-delete-chapter") {
+      const chapterId = String(body.chapter_id ?? "");
+      const { data: chapter, error: lookupError } = await admin.from("chapters")
+        .select("id, name, is_official, chapter_scope, city, region, school_name")
+        .eq("id", chapterId)
+        .maybeSingle();
+      if (lookupError) throw lookupError;
+      if (!chapter) return json({ error: "That chapter could not be found." }, 404);
+      if (chapter.is_official) return json({ error: "The official National Chapter cannot be deleted." }, 400);
+
+      // Storage objects are not covered by the chapter's ON DELETE CASCADE, so
+      // the private event photos would be left orphaned in the bucket. Clear
+      // them before the row goes away and their paths become unrecoverable.
+      const { data: records, error: recordsError } = await admin.from("chapter_event_records").select("photo_paths").eq("chapter_id", chapterId);
+      if (recordsError) throw recordsError;
+      const photoPaths = (records ?? []).flatMap((record: { photo_paths?: unknown }) =>
+        Array.isArray(record.photo_paths) ? record.photo_paths.filter((path): path is string => typeof path === "string") : []);
+      if (photoPaths.length) {
+        const { error: storageError } = await admin.storage.from("chapter-event-photos").remove(photoPaths);
+        if (storageError) throw storageError;
+      }
+
+      const { error: deleteError } = await admin.from("chapters").delete().eq("id", chapterId).eq("is_official", false);
+      if (deleteError) throw deleteError;
+
+      // The application that produced this chapter would otherwise be stranded:
+      // it stays 'approved', its chapter no longer exists, and
+      // admin-approve-application refuses to run on an approved row. Put the
+      // newest matching one back in the queue so it can be approved again or
+      // declined. A failure here must not resurface as a failed delete — the
+      // chapter is already gone — so the outcome is reported, not thrown.
+      let reopenedApplication = false;
+      try {
+        const match = admin.from("chapter_applications")
+          .select("id")
+          .eq("status", "approved")
+          .eq("chapter_scope", chapter.chapter_scope)
+          .eq("city", chapter.city)
+          .eq("region", chapter.region)
+          .order("created_at", { ascending: false })
+          .limit(1);
+        const { data: candidates } = chapter.school_name
+          ? await match.eq("school_name", chapter.school_name)
+          : await match.is("school_name", null);
+        const applicationId = candidates?.[0]?.id;
+        if (applicationId) {
+          const { error: reopenError } = await admin.from("chapter_applications")
+            .update({ status: "new", updated_at: new Date().toISOString() })
+            .eq("id", applicationId);
+          reopenedApplication = !reopenError;
+        }
+      } catch { /* The chapter is deleted either way; the application stays approved. */ }
+
+      return json({ deleted: chapter.name, reopenedApplication, overview: await adminOverview() });
+    }
+
     if (action === "admin-review-report") {
       const review = asRecord(body.review);
       const reportId = String(review.report_id ?? "");
