@@ -1,7 +1,5 @@
 "use client";
 
-/* eslint-disable @next/next/no-img-element -- private, expiring Supabase photo URLs cannot use the Next image optimizer */
-
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { supabase } from "../lib/supabase";
 
@@ -14,6 +12,9 @@ type ChapterScope = "school" | "regional" | "official";
 const CHAPTER_SETUP_GUIDE_URL = "https://docs.google.com/document/d/1YVnkXYF1WHyXeoD81Hq9jF_dJJyaxJ3jfl2bzHgaVFs/edit?tab=t.0#heading=h.j0nfdxulwp7w";
 const CHAPTER_OPERATIONS_GUIDE_URL = "https://docs.google.com/document/d/1hgxSoDHWPXDa6twMTREy772fba_G6dborm01ajz_O5g/edit?tab=t.0#heading=h.pr0guz6cdj1x";
 const TEAM_BUILDING_GUIDE_URL = "https://docs.google.com/document/d/1EVU2OHy8osrfLhzwi5QcwwPmTdINV9Luu4DgaLGot50/edit?tab=t.0";
+// Event photos are emailed to the national team rather than uploaded, so the
+// portal never stores image files and the Storage quota stays free.
+const TMM_PHOTO_EMAIL = "themasterymentors@gmail.com";
 
 // Must stay in sync with the chapter_applications_contact_grade check constraint.
 const GRADE_OPTIONS = ["6th grade", "7th grade", "8th grade", "9th grade", "10th grade", "11th grade", "12th grade", "College", "Not currently a student"];
@@ -103,8 +104,6 @@ type ChapterEventRecord = {
   summary: string;
   outcomes?: string | null;
   documentation_url?: string | null;
-  photo_paths?: string[];
-  photo_urls?: string[];
   created_at: string;
   updated_at?: string;
 };
@@ -635,30 +634,14 @@ export default function Page() {
   const addEventRecord = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const formElement = event.currentTarget;
-    const uploadedPaths: string[] = [];
     setBusy(true);
     try {
-      if (!supabase || !dashboard) throw new Error("The photo uploader is not connected yet.");
       const form = new FormData(formElement);
-      const photos = form.getAll("photos").filter((value): value is File => value instanceof File && value.size > 0);
-      if (photos.length > 6) throw new Error("Choose no more than six photos per event.");
-      const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
-      if (photos.some((photo) => !allowedTypes.has(photo.type))) throw new Error("Photos must be JPG, PNG, WebP, or GIF files.");
-      if (photos.some((photo) => photo.size > 10 * 1024 * 1024)) throw new Error("Each photo must be 10 MB or smaller.");
-      const extensionByType: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" };
-      for (const photo of photos) {
-        const path = `${dashboard.chapter.id}/${crypto.randomUUID()}.${extensionByType[photo.type]}`;
-        const { error } = await supabase.storage.from("chapter-event-photos").upload(path, photo, { contentType: photo.type, upsert: false });
-        if (error) throw error;
-        uploadedPaths.push(path);
-      }
-      form.delete("photos");
-      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-add-event-record", { record: { ...Object.fromEntries(form), photo_paths: uploadedPaths } });
+      const result = await invokePortal<{ dashboard: ChapterDashboardData }>("chapter-add-event-record", { record: Object.fromEntries(form) });
       setDashboard(result.dashboard);
       formElement.reset();
-      setMessage(uploadedPaths.length ? `Event record saved with ${uploadedPaths.length} photo${uploadedPaths.length === 1 ? "" : "s"}.` : "Event record saved.");
+      setMessage("Event record saved.");
     } catch (error) {
-      if (supabase && uploadedPaths.length) await supabase.storage.from("chapter-event-photos").remove(uploadedPaths).catch(() => undefined);
       setMessage(error instanceof Error ? error.message : "The event record could not be saved.");
     }
     finally { setBusy(false); }
@@ -878,8 +861,8 @@ function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVol
       </div>
       <section className="work-section event-records-section" id="event-records">
         <div className="section-title"><div><span className="section-kicker">Document your work</span><h2>Chapter event records</h2><p>Keep a permanent record of chapter events without waiting for the weekly check-in.</p></div><span className="notification-count">{data.eventRecords.length} recorded</span></div>
-        <details className="disclosure-form"><summary><span><strong>Document an event</strong><small>Record attendance, outcomes, photos, and supporting links.</small></span><b>＋</b></summary><form className="surface-form compact disclosure-content" onSubmit={onAddEventRecord}><div className="form-grid three"><Field label="Event title"><input name="title" minLength={2} maxLength={160} required /></Field><Field label="Event date"><input name="event_date" type="date" required /></Field><Field label="Event type"><select name="event_type" defaultValue="Tutoring session"><option>Tutoring session</option><option>Volunteer training</option><option>Community outreach</option><option>Fundraiser</option><option>Team meeting</option><option>Other chapter event</option></select></Field><Field label="Location"><input name="location" maxLength={240} /></Field><Field label="People attending"><input name="attendees" type="number" min="0" max="100000" defaultValue="0" required /></Field><Field label="Documentation link"><input name="documentation_url" type="url" placeholder="https://…" /></Field></div><Field label="Event photos" hint="Up to 6 JPG, PNG, WebP, or GIF photos · 10 MB each"><input className="photo-input" name="photos" type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple /></Field><div className="form-grid"><Field label="What happened?"><textarea name="summary" rows={4} maxLength={4000} required /></Field><Field label="Outcomes and follow-up"><textarea name="outcomes" rows={4} maxLength={4000} placeholder="Results, next steps, lessons learned…" /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>{busy ? "Uploading and saving…" : "Save event record"}</Button></div></form></details>
-        <div className="event-record-list">{data.eventRecords.length ? data.eventRecords.map((record) => <article className="event-record-card" key={record.id}><time>{new Date(`${record.event_date}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</time><div><span className="section-kicker">{record.event_type} · {record.attendees} attending</span><h3>{record.title}</h3><p>{record.summary}</p>{record.photo_urls?.length ? <div className="event-photo-grid">{record.photo_urls.map((url, index) => <a href={url} target="_blank" rel="noreferrer" key={url}><img src={url} alt={`${record.title} event photo ${index + 1}`} loading="lazy" /></a>)}</div> : null}{record.outcomes && <small><strong>Outcomes:</strong> {record.outcomes}</small>}{record.location && <small>{record.location}</small>}{record.documentation_url && <a className="text-link" href={record.documentation_url} target="_blank" rel="noreferrer">Open documentation →</a>}</div><Button kind="danger" disabled={busy} onClick={() => onDeleteEventRecord(record)}>Delete</Button></article>) : <Empty text="No event records yet. Use Document an event after your next tutoring session, outreach event, fundraiser, or team activity." />}</div>
+        <details className="disclosure-form"><summary><span><strong>Document an event</strong><small>Record attendance, outcomes, and supporting links.</small></span><b>＋</b></summary><form className="surface-form compact disclosure-content" onSubmit={onAddEventRecord}><div className="form-grid three"><Field label="Event title"><input name="title" minLength={2} maxLength={160} required /></Field><Field label="Event date"><input name="event_date" type="date" required /></Field><Field label="Event type"><select name="event_type" defaultValue="Tutoring session"><option>Tutoring session</option><option>Volunteer training</option><option>Community outreach</option><option>Fundraiser</option><option>Team meeting</option><option>Other chapter event</option></select></Field><Field label="Location"><input name="location" maxLength={240} /></Field><Field label="People attending"><input name="attendees" type="number" min="0" max="100000" defaultValue="0" required /></Field><Field label="Documentation link"><input name="documentation_url" type="url" placeholder="https://…" /></Field></div><p className="form-note">Photos are not uploaded here. Email them to <a className="text-link" href={mailtoHref(TMM_PHOTO_EMAIL, { subject: `Event photos — ${data.chapter.name}` })}>{TMM_PHOTO_EMAIL}</a> and name the event so they can be matched to this record.</p><div className="form-grid"><Field label="What happened?"><textarea name="summary" rows={4} maxLength={4000} required /></Field><Field label="Outcomes and follow-up"><textarea name="outcomes" rows={4} maxLength={4000} placeholder="Results, next steps, lessons learned…" /></Field></div><div className="align-right"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save event record"}</Button></div></form></details>
+        <div className="event-record-list">{data.eventRecords.length ? data.eventRecords.map((record) => <article className="event-record-card" key={record.id}><time>{new Date(`${record.event_date}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</time><div><span className="section-kicker">{record.event_type} · {record.attendees} attending</span><h3>{record.title}</h3><p>{record.summary}</p>{record.outcomes && <small><strong>Outcomes:</strong> {record.outcomes}</small>}{record.location && <small>{record.location}</small>}{record.documentation_url && <a className="text-link" href={record.documentation_url} target="_blank" rel="noreferrer">Open documentation →</a>}</div><Button kind="danger" disabled={busy} onClick={() => onDeleteEventRecord(record)}>Delete</Button></article>) : <Empty text="No event records yet. Use Document an event after your next tutoring session, outreach event, fundraiser, or team activity." />}</div>
       </section>
       <section className="work-section volunteer-section" id="volunteers">
         <div className="section-title"><div><span className="section-kicker">People directory</span><h2>Chapter volunteers</h2><p>Active people stay visible. Inactive records are hidden until you need them.</p></div><div className="section-controls"><span className="notification-count">{activeVolunteers.length} active</span>{inactiveVolunteers.length > 0 && <button className="visibility-toggle" onClick={() => setShowInactiveVolunteers((value) => !value)}>{showInactiveVolunteers ? "Hide inactive" : `Show ${inactiveVolunteers.length} inactive`}</button>}</div></div>
@@ -1074,7 +1057,7 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
               <div className="chapter-row-end">{chapter.is_official ? <><span className="status status-approved">Official · admin only</span><Button kind="secondary" onClick={openNationalReport}>Weekly report</Button></> : <><Status value={chapter.status} /><span className="code-hint">Code <code>{chapter.access_code ?? (chapter.access_code_hint ? `••••${chapter.access_code_hint}` : "—")}</code></span>{chapter.access_code && <Button kind="quiet" disabled={busy} onClick={() => navigator.clipboard.writeText(chapter.access_code!)}>Copy</Button>}<Button kind="secondary" disabled={busy} onClick={() => onAction("admin-reset-code", { chapter_id: chapter.id }, chapter.name)}>Reset code</Button><Button kind="danger" disabled={busy} onClick={() => {
                 const reports = data.reports.filter((report) => report.chapter_id === chapter.id).length;
                 const eventRecords = data.eventRecords.filter((record) => record.chapter_id === chapter.id).length;
-                const totals = [`${volunteers} active volunteer${volunteers === 1 ? "" : "s"}`, `${reports} weekly report${reports === 1 ? "" : "s"}`, `${eventRecords} event record${eventRecords === 1 ? "" : "s"} and their photos`].join(", ");
+                const totals = [`${volunteers} active volunteer${volunteers === 1 ? "" : "s"}`, `${reports} weekly report${reports === 1 ? "" : "s"}`, `${eventRecords} event record${eventRecords === 1 ? "" : "s"}`].join(", ");
                 if (window.confirm(`Permanently delete ${chapter.name}?\n\nThis destroys ${totals}, and the chapter's access code stops working immediately. If this chapter came from an application, that application returns to the queue.\n\nThis cannot be undone.`)) {
                   void onAction("admin-delete-chapter", { chapter_id: chapter.id }, chapter.name);
                 }

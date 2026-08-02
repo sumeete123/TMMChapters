@@ -84,9 +84,10 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /Request a demotion/);
   assert.match(page, /Previous attempts to address the issue/);
   assert.match(page, /Chapter event records/);
-  assert.match(page, /Event photos/);
-  assert.match(page, /chapter-event-photos/);
-  assert.match(page, /photo_urls/);
+  // Photos are emailed to the national team, so the record form asks for the
+  // event details only and no bucket name appears in the client at all.
+  assert.match(page, /Photos are not uploaded here/);
+  assert.doesNotMatch(page, /chapter-event-photos/);
   assert.doesNotMatch(page, /Invite applications|Interview candidates|Application status/);
   assert.match(page, /Our impact/);
   assert.match(page, /Students impacted/);
@@ -120,8 +121,9 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(edgeFunction, /chapter-add-executive-member/);
   assert.match(edgeFunction, /chapter-submit-demotion-request/);
   assert.match(edgeFunction, /chapter-add-event-record/);
-  assert.match(edgeFunction, /createSignedUrls/);
-  assert.match(edgeFunction, /photo_paths/);
+  // The Edge Function no longer touches Storage: no uploads to clean up on
+  // delete, and no signed URLs to hand back to the dashboard.
+  assert.doesNotMatch(edgeFunction, /createSignedUrls|admin\.storage/);
   assert.match(edgeFunction, /admin-review-demotion-request/);
   assert.match(edgeFunction, /admin-delete-task/);
   assert.match(edgeFunction, /admin-delete-event/);
@@ -175,9 +177,13 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(securityHeaders, /Content-Security-Policy/);
   assert.match(securityHeaders, /frame-ancestors 'none'/);
   assert.match(securityHeaders, /frame-src https:\/\/challenges\.cloudflare\.com/);
-  // Event photos are private signed Supabase URLs; img-src must allow that
-  // origin or every chapter event photo is blocked by the CSP.
-  assert.match(securityHeaders, /img-src[^;]*\$\{SUPABASE_ORIGIN\}/);
+  // Photos are emailed, not uploaded, so the page loads no remote images and
+  // img-src must not hand out a third-party origin.
+  assert.match(securityHeaders, /"img-src 'self' data: blob:"/);
+  // The upload path is gone from the client and the Edge Function alike.
+  assert.doesNotMatch(page, /photo_paths|photo_urls|type="file"/);
+  assert.doesNotMatch(edgeFunction, /photo_paths|chapter-event-photos/);
+  assert.match(page, /themasterymentors@gmail\.com/);
   assert.match(worker, /secureResponse/);
   assert.doesNotMatch(css, /Cormorant Garamond/);
   assert.match(packageJson, /@supabase\/supabase-js/);
