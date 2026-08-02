@@ -46,6 +46,22 @@ Never place a Supabase secret or service-role key in a `NEXT_PUBLIC_*` variable.
 
 Production schema changes are tracked in `supabase/migrations/`.
 
+### Storage maintenance
+
+Database size here tracks page views rather than chapter activity: every visitor
+mints an anonymous Auth identity on page load, and Supabase never removes them.
+A `pg_cron` job runs `private.purge_stale_auth_and_audit_rows()` daily at 04:17
+UTC to drop anonymous identities older than seven days that hold no live
+authorization, along with stale code-attempt rows, long-expired grants, and
+rotated refresh tokens. Check it with `select * from cron.job;` and run it by
+hand with `select * from private.purge_stale_auth_and_audit_rows();`.
+
+Chapter event photos are the other growth path, and the cheaper one to
+underestimate: the bucket allows 10 MB per file and six photos per event record,
+so roughly seventeen fully illustrated events would fill a 1 GB quota. Lower
+`file_size_limit` on the `chapter-event-photos` bucket or downscale in the
+browser before upload if that starts to matter.
+
 The Edge Function source is `supabase/functions/chapter-portal/index.ts`. It is deployed with JWT verification enabled.
 
 Anonymous sign-in must be enabled in Supabase Authentication. Cloudflare Turnstile can be enabled by configuring CAPTCHA protection in Supabase and setting `NEXT_PUBLIC_TURNSTILE_SITE_KEY` in the web deployment.
