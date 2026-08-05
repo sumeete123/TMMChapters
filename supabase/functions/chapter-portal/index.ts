@@ -140,6 +140,18 @@ async function attachEventPhotoUrls(records: Array<Record<string, unknown>>) {
   }));
 }
 
+async function attachApplicationPhotoUrls(applications: Array<Record<string, unknown>>) {
+  const paths = applications.map((application) => application.photo_path).filter((path): path is string => typeof path === "string" && path.length > 0);
+  if (!paths.length) return applications.map((application) => ({ ...application, photo_url: null }));
+  const { data, error } = await admin.storage.from("chapter-application-photos").createSignedUrls(paths, 3600);
+  if (error) throw error;
+  const urlByPath = new Map((data ?? []).filter((item) => item.signedUrl).map((item) => [item.path, item.signedUrl]));
+  return applications.map((application) => ({
+    ...application,
+    photo_url: typeof application.photo_path === "string" ? urlByPath.get(application.photo_path) ?? null : null,
+  }));
+}
+
 async function getChapterDashboard(chapterId: string) {
   const now = new Date().toISOString();
   const [chapterResult, tasksResult, eventsResult, reportsResult, volunteersResult, executiveMembersResult, demotionRequestsResult, eventRecordsResult] = await Promise.all([
@@ -179,7 +191,7 @@ async function getChapterDashboard(chapterId: string) {
 
 async function adminOverview() {
   const [applications, chapters, reports, reviews, tasks, events, volunteers, executiveMembers, demotionRequests, eventRecords, nationalImpact] = await Promise.all([
-    admin.from("chapter_applications").select("id, contact_name, contact_email, contact_phone, additional_contacts, organization_name, location, chapter_scope, city, region, school_name, student_reach, why, status, internal_notes, created_at").order("created_at", { ascending: false }),
+    admin.from("chapter_applications").select("id, contact_name, contact_email, contact_phone, grade_level, additional_contacts, organization_name, location, chapter_scope, city, region, school_name, student_reach, why, status, internal_notes, instagram_photo_consent, photo_path, photo_uploaded_at, photo_deleted_at, created_at").order("created_at", { ascending: false }),
     admin.from("chapters").select("id, name, slug, location, chapter_scope, city, region, school_name, contact_name, contact_email, contact_phone, advisor_name, advisor_email, status, access_code_hint, is_official, created_at").order("name"),
     admin.from("weekly_reports").select("id, chapter_id, week_start, sessions_held, students_served, instructional_hours, completed_weekly_tasks, highlights, blockers, next_week_plan, support_needed, submitted_at").order("week_start", { ascending: false }).limit(200),
     admin.from("weekly_report_reviews").select("report_id, status, rating, private_notes, public_feedback, reviewed_at, reviewed_by, updated_at").order("updated_at", { ascending: false }).limit(200),
@@ -206,7 +218,8 @@ async function adminOverview() {
     }
   } catch { /* Codes are a convenience; the overview still loads without them. */ }
   const chapters_with_codes = (chapters.data ?? []).map((chapter) => ({ ...chapter, access_code: codeByChapter.get(chapter.id) ?? null }));
-  return { applications: applications.data ?? [], chapters: chapters_with_codes, reports: reports.data ?? [], reviews: reviews.data ?? [], tasks: tasks.data ?? [], events: events.data ?? [], volunteers: volunteers.data ?? [], executiveMembers: executiveMembers.data ?? [], demotionRequests: demotionRequests.data ?? [], eventRecords: eventRecords.data ?? [], nationalImpact };
+  const applicationsWithPhotos = await attachApplicationPhotoUrls((applications.data ?? []) as Array<Record<string, unknown>>);
+  return { applications: applicationsWithPhotos, chapters: chapters_with_codes, reports: reports.data ?? [], reviews: reviews.data ?? [], tasks: tasks.data ?? [], events: events.data ?? [], volunteers: volunteers.data ?? [], executiveMembers: executiveMembers.data ?? [], demotionRequests: demotionRequests.data ?? [], eventRecords: eventRecords.data ?? [], nationalImpact };
 }
 
 async function provisionUniqueChapterCode(chapterId: string, requestedCode?: unknown) {
@@ -618,11 +631,30 @@ Deno.serve(async (req: Request) => {
 
     if (action === "admin-delete-application") {
       const applicationId = String(body.application_id ?? "");
-      const { data: application, error: lookupError } = await admin.from("chapter_applications").select("id, status").eq("id", applicationId).maybeSingle();
+      const { data: application, error: lookupError } = await admin.from("chapter_applications").select("id, status, photo_path").eq("id", applicationId).maybeSingle();
       if (lookupError) throw lookupError;
       if (!application) return json({ error: "That application could not be found." }, 404);
       if (application.status !== "declined") return json({ error: "Only declined applications can be deleted." }, 400);
       const { error } = await admin.from("chapter_applications").delete().eq("id", applicationId).eq("status", "declined");
+      if (error) throw error;
+      if (application.photo_path) {
+        await admin.storage.from("chapter-application-photos").remove([application.photo_path]).catch(() => undefined);
+      }
+      return json(await adminOverview());
+    }
+
+    // Photos are stored only until an administrator has downloaded them. Deleting
+    // the file frees bucket storage while the application record keeps a note
+    // that a consented photo was collected and already retrieved.
+    if (action === "admin-delete-application-photo") {
+      const applicationId = String(body.application_id ?? "");
+      const { data: application, error: lookupError } = await admin.from("chapter_applications").select("id, photo_path").eq("id", applicationId).maybeSingle();
+      if (lookupError) throw lookupError;
+      if (!application) return json({ error: "That application could not be found." }, 404);
+      if (!application.photo_path) return json({ error: "That application photo has already been deleted." }, 400);
+      const { error: storageError } = await admin.storage.from("chapter-application-photos").remove([application.photo_path]);
+      if (storageError) throw storageError;
+      const { error } = await admin.from("chapter_applications").update({ photo_path: null, photo_deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", applicationId);
       if (error) throw error;
       return json(await adminOverview());
     }

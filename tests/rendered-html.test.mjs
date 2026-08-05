@@ -43,7 +43,7 @@ test("server-renders the terms and privacy policy", async () => {
 });
 
 test("keeps the finished site free of starter-only infrastructure", async () => {
-  const [page, legalPage, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, geographyMigration, executiveTeamMigration, chapterOperationsMigration, eventPhotosMigration, nextConfig, worker, packageJson] = await Promise.all([
+  const [page, legalPage, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, geographyMigration, executiveTeamMigration, chapterOperationsMigration, eventPhotosMigration, gradeLevelMigration, applicationPhotoMigration, nextConfig, worker, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/legal/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -57,6 +57,8 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
     readFile(new URL("../supabase/migrations/20260721160539_chapter_executive_team.sql", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260721161606_executive_board_demotions_and_event_logs.sql", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260721172048_chapter_event_photos.sql", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20260725224735_add_application_grade_level.sql", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20260805120000_application_photo_consent.sql", import.meta.url), "utf8"),
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -104,7 +106,19 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /Preparing secure form/);
   assert.match(page, /One chapter per school/);
   assert.match(page, /One chapter per city/);
+  assert.match(page, /What grade are you in\?/);
+  assert.match(page, /name="grade_level"/);
+  assert.match(page, /grade_level/);
   assert.match(page, /Regional city chapter/);
+  assert.match(page, /May we use a photo of you on Instagram\?/);
+  assert.match(page, /name="instagram_photo_consent"/);
+  assert.match(page, /You must answer/);
+  assert.match(page, /hips up to your head/);
+  assert.match(page, /nothing is cropped/);
+  assert.match(page, /chapter-application-photos/);
+  assert.match(page, /admin-delete-application-photo/);
+  assert.match(page, /Download photo/);
+  assert.match(page, /drive\.google\.com\/drive/);
   assert.match(page, /name="legal_consent"/);
   assert.match(page, /href="\/legal"/);
   assert.match(legalPage, /event photos/i);
@@ -122,6 +136,8 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(edgeFunction, /createSignedUrls/);
   assert.match(edgeFunction, /photo_paths/);
   assert.match(edgeFunction, /admin-review-demotion-request/);
+  assert.match(edgeFunction, /admin-delete-application-photo/);
+  assert.match(edgeFunction, /attachApplicationPhotoUrls/);
   assert.match(edgeFunction, /admin-delete-task/);
   assert.match(edgeFunction, /admin-delete-event/);
   assert.match(edgeFunction, /Only declined applications can be deleted/);
@@ -162,6 +178,12 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(eventPhotosMigration, /file_size_limit/);
   assert.match(eventPhotosMigration, /current_chapter_id/);
   assert.match(eventPhotosMigration, /cardinality\(photo_paths\) <= 6/);
+  assert.match(gradeLevelMigration, /add column if not exists grade_level text/);
+  assert.match(gradeLevelMigration, /grant insert \(grade_level\)/);
+  assert.match(applicationPhotoMigration, /instagram_photo_consent boolean not null default false/);
+  assert.match(applicationPhotoMigration, /instagram_photo_consent = true/);
+  assert.match(applicationPhotoMigration, /photo_path is not null/);
+  assert.match(applicationPhotoMigration, /chapter-application-photos/);
   assert.match(edgeFunction, /chapterGeography/);
   assert.match(edgeFunction, /chapter-login/);
   assert.match(nationalImpactMigration, /drop column if exists mentors_present/);
