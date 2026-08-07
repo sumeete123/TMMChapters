@@ -176,10 +176,6 @@ type Application = {
   why?: string | null;
   status: string;
   instagram_photo_consent?: boolean;
-  photo_path?: string | null;
-  photo_url?: string | null;
-  photo_uploaded_at?: string | null;
-  photo_deleted_at?: string | null;
   created_at: string;
 };
 
@@ -368,7 +364,6 @@ export default function Page() {
   const [adminReady, setAdminReady] = useState(false);
   const [adminTab, setAdminTab] = useState<AdminTab>("overview");
   const [issuedCode, setIssuedCode] = useState<IssuedCode | null>(null);
-  const [applicationPhoto, setApplicationPhoto] = useState<Blob | null>(null);
 
   const goTo = (next: View) => {
     setView(next);
@@ -477,9 +472,6 @@ export default function Page() {
     if (String(form.get("instagram_photo_consent") ?? "") !== "yes") {
       return setMessage("You must select “Yes” to the Instagram photo permission question before your application can be submitted.");
     }
-    if (!applicationPhoto) {
-      return setMessage("Add a photo of yourself and position your face inside the frame before submitting.");
-    }
     setBusy(true);
     const payload = {
       contact_name: String(form.get("contact_name") ?? "").trim().slice(0, 120),
@@ -503,27 +495,17 @@ export default function Page() {
         role: String(form.getAll("additional_role")[index] ?? "Volunteer").trim().slice(0, 80),
       })).filter((contact) => contact.full_name.length >= 2),
     };
-    let uploadedPhotoPath = "";
     try {
-      const session = await ensureAnonymousSession(captchaToken || undefined);
-      uploadedPhotoPath = `${session.user.id}/${crypto.randomUUID()}.jpg`;
-      const { error: uploadError } = await supabase.storage
-        .from("chapter-application-photos")
-        .upload(uploadedPhotoPath, applicationPhoto, { contentType: "image/jpeg", upsert: false });
-      if (uploadError) throw uploadError;
+      await ensureAnonymousSession(captchaToken || undefined);
       const { error } = await supabase.from("chapter_applications").insert({
         ...payload,
         instagram_photo_consent: true,
-        photo_path: uploadedPhotoPath,
-        photo_uploaded_at: new Date().toISOString(),
       });
       if (error) throw error;
       formElement.reset();
-      setApplicationPhoto(null);
       goTo("access");
       setMessage("Application sent. We’ll review it and contact you by email.");
     } catch (error) {
-      if (uploadedPhotoPath) await supabase.storage.from("chapter-application-photos").remove([uploadedPhotoPath]).catch(() => undefined);
       const code = (error as { code?: string })?.code;
       const detail = error instanceof Error ? error.message : "";
       const duplicatePlace = detail.includes("chapter_applications_one_open_school_idx")
@@ -738,7 +720,7 @@ export default function Page() {
     {notice && <div className="toast" role="status">{notice}<button onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}
 
     {view === "access" && <AccessView onLogin={chapterLogin} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} goTo={goTo} />}
-    {view === "apply" && <ApplicationView onSubmit={submitApplication} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} onPhoto={setApplicationPhoto} hasPhoto={applicationPhoto !== null} />}
+    {view === "apply" && <ApplicationView onSubmit={submitApplication} busy={busy} authState={authState} authMessage={authMessage} onCaptcha={setCaptchaToken} />}
     {view === "chapter" && dashboard && <ChapterView data={dashboard} onReport={submitReport} onToggleTask={toggleTask} onAddVolunteer={addVolunteer} onUpdateVolunteer={updateVolunteer} onDeleteVolunteer={deleteVolunteer} onAddExecutiveMember={addExecutiveMember} onSubmitDemotionRequest={submitDemotionRequest} onAddEventRecord={addEventRecord} onDeleteEventRecord={deleteEventRecord} onLogout={chapterLogout} busy={busy} />}
     {view === "admin" && <AdminView data={adminData} ready={adminReady} tab={adminTab} setTab={setAdminTab} onLogin={adminLogin} onAction={adminAction} onLogout={adminLogout} issuedCode={issuedCode} setIssuedCode={setIssuedCode} onCaptcha={setCaptchaToken} busy={busy} />}
   </main>;
@@ -759,12 +741,11 @@ function AccessView({ onLogin, busy, authState, authMessage, onCaptcha, goTo }: 
   </section>;
 }
 
-function ApplicationView({ onSubmit, busy, authState, authMessage, onCaptcha, onPhoto, hasPhoto }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; authState: AuthState; authMessage: string; onCaptcha: (token: string) => void; onPhoto: (photo: Blob | null) => void; hasPhoto: boolean }) {
+function ApplicationView({ onSubmit, busy, authState, authMessage, onCaptcha }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; authState: AuthState; authMessage: string; onCaptcha: (token: string) => void }) {
   const [additionalPeople, setAdditionalPeople] = useState<string[]>([]);
   const [chapterScope, setChapterScope] = useState<Exclude<ChapterScope, "official">>("school");
   const [photoConsent, setPhotoConsent] = useState<"" | "yes" | "no">("");
   const consentBlocked = photoConsent === "no";
-  const photoMissing = photoConsent === "yes" && !hasPhoto;
   return <section className="form-page">
     <div className="page-heading"><span className="tiny-label">Chapter application</span><h1>Start a chapter</h1><p>Chapter boundaries depend on location. Choose where you will operate before adding your team.</p></div>
     <form className="surface-form" onSubmit={onSubmit}>
@@ -802,14 +783,12 @@ function ApplicationView({ onSubmit, busy, authState, authMessage, onCaptcha, on
             <span><strong>Yes</strong><small>I give The Mastery Mentors permission to use my photo on Instagram and other TMM social media.</small></span>
           </label>
           <label className={photoConsent === "no" ? "selected refused" : ""}>
-            <input type="radio" name="instagram_photo_consent" value="no" checked={photoConsent === "no"} onChange={() => { setPhotoConsent("no"); onPhoto(null); }} />
+            <input type="radio" name="instagram_photo_consent" value="no" checked={photoConsent === "no"} onChange={() => setPhotoConsent("no")} />
             <span><strong>No</strong><small>I do not give permission.</small></span>
           </label>
         </div>
         <p className="photo-consent-requirement" id="photo-consent-requirement">You must answer <strong>Yes</strong> to submit this application. If you answer No, the application cannot be sent and your chapter cannot be started.</p>
-        {consentBlocked && <p className="photo-consent-block" role="alert">Answering “Yes” is required. Change your answer to Yes and upload a photo, or you will not be able to submit this application or start a chapter.</p>}
-        {photoConsent === "yes" && <ApplicantPhotoUpload onPhoto={onPhoto} />}
-        {photoMissing && <p className="photo-consent-block" role="alert">A photo is required. Choose a photo of yourself from your hips up before submitting.</p>}
+        {consentBlocked && <p className="photo-consent-block" role="alert">Answering “Yes” is required before you can submit this application or start a chapter.</p>}
       </fieldset>
 
       <label className="legal-consent">
@@ -818,101 +797,9 @@ function ApplicationView({ onSubmit, busy, authState, authMessage, onCaptcha, on
       </label>
       {turnstileSiteKey && authState !== "ready" && <TurnstileChallenge onToken={onCaptcha} />}
       {authMessage && <p className={`access-state ${authState}`}>{authMessage}</p>}
-      <div className="form-footer"><p>Applications are reviewed manually. Approved chapters receive a private access code.{photoConsent !== "yes" || !hasPhoto ? " Photo permission must be answered Yes and a photo added before you can send this application." : ""}</p><Button type="submit" disabled={busy || authState !== "ready" || photoConsent !== "yes" || !hasPhoto}>{busy ? "Sending…" : authState === "loading" ? "Preparing secure form…" : consentBlocked ? "Photo permission required" : photoMissing ? "Add your photo to continue" : "Send application"}</Button></div>
+      <div className="form-footer"><p>Applications are reviewed manually. Approved chapters receive a private access code. Instagram photo permission must be answered Yes before you can send this application.</p><Button type="submit" disabled={busy || authState !== "ready" || photoConsent !== "yes"}>{busy ? "Sending…" : authState === "loading" ? "Preparing secure form…" : consentBlocked ? "Instagram consent required" : "Send application"}</Button></div>
     </form>
   </section>;
-}
-
-// The whole photo is kept — applicants send a waist-up ("hip to face") picture
-// and nothing is cropped out. Large camera files are only resized down so the
-// bucket does not fill up with 5 MB originals.
-const PHOTO_MAX_EDGE = 1600;
-const ALLOWED_PHOTO_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
-
-function ApplicantPhotoUpload({ onPhoto }: { onPhoto: (photo: Blob | null) => void }) {
-  const [preview, setPreview] = useState<{ url: string; width: number; height: number; size: number } | null>(null);
-  const [working, setWorking] = useState(false);
-  const [error, setError] = useState("");
-  const previewRef = useRef<string>("");
-
-  useEffect(() => () => { if (previewRef.current) URL.revokeObjectURL(previewRef.current); }, []);
-
-  const chooseFile = async (file?: File) => {
-    if (!file) return;
-    if (!ALLOWED_PHOTO_TYPES.has(file.type)) return setError("Choose a JPG, PNG, or WebP photo.");
-    if (file.size > 20 * 1024 * 1024) return setError("Choose a photo smaller than 20 MB.");
-    setWorking(true);
-    setError("");
-    try {
-      const image = await loadImage(file);
-      const scale = Math.min(1, PHOTO_MAX_EDGE / Math.max(image.width, image.height));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(image.width * scale);
-      canvas.height = Math.round(image.height * scale);
-      const context = canvas.getContext("2d");
-      if (!context) throw new Error("canvas unavailable");
-      context.drawImage(image, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.88));
-      if (!blob) throw new Error("encode failed");
-      if (previewRef.current) URL.revokeObjectURL(previewRef.current);
-      const url = URL.createObjectURL(blob);
-      previewRef.current = url;
-      setPreview({ url, width: canvas.width, height: canvas.height, size: blob.size });
-      onPhoto(blob);
-    } catch {
-      setError("That image could not be opened. Try a different photo.");
-      onPhoto(null);
-    } finally { setWorking(false); }
-  };
-
-  const clearPhoto = () => {
-    if (previewRef.current) URL.revokeObjectURL(previewRef.current);
-    previewRef.current = "";
-    setPreview(null);
-    onPhoto(null);
-  };
-
-  return <div className="applicant-photo-upload">
-    <div className="applicant-photo-intro">
-      <strong>Upload a photo of yourself <span className="required-flag">Required</span></strong>
-      <p>Send a photo taken from about your <b>hips up to your head</b> — we post the whole picture, so nothing is cropped out. Stand against a clear background and face the camera.</p>
-    </div>
-    {!preview && <label className="applicant-photo-drop">
-      <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => void chooseFile(event.target.files?.[0])} />
-      <span><b>{working ? "Preparing photo…" : "Choose a photo"}</b><small>JPG, PNG, or WebP · hip-to-head, facing the camera</small></span>
-    </label>}
-    {preview && <div className="applicant-photo-stage">
-      <div className="applicant-photo-preview"><img src={preview.url} alt="Your uploaded photo" /></div>
-      <div className="applicant-photo-controls">
-        <strong>This exact photo will be sent.</strong>
-        <small>{preview.width} × {preview.height} · {(preview.size / 1024).toFixed(0)} KB · full frame, nothing cropped</small>
-        <div className="applicant-photo-actions">
-          <label className="button secondary applicant-photo-replace">Choose a different photo<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => void chooseFile(event.target.files?.[0])} /></label>
-          <Button type="button" kind="quiet" onClick={clearPhoto}>Remove</Button>
-        </div>
-      </div>
-    </div>}
-    {error && <p className="photo-consent-block" role="alert">{error}</p>}
-  </div>;
-}
-
-// createImageBitmap applies the camera's EXIF rotation; the <img> fallback keeps
-// older browsers working.
-async function loadImage(file: File): Promise<ImageBitmap | HTMLImageElement> {
-  if (typeof createImageBitmap === "function") {
-    try {
-      return await createImageBitmap(file, { imageOrientation: "from-image" });
-    } catch { /* Fall through to the element-based loader below. */ }
-  }
-  const url = URL.createObjectURL(file);
-  try {
-    return await new Promise<HTMLImageElement>((resolve, reject) => {
-      const element = new Image();
-      element.onload = () => resolve(element);
-      element.onerror = () => reject(new Error("decode failed"));
-      element.src = url;
-    });
-  } finally { window.setTimeout(() => URL.revokeObjectURL(url), 0); }
 }
 
 function ChapterView({ data, onReport, onToggleTask, onAddVolunteer, onUpdateVolunteer, onDeleteVolunteer, onAddExecutiveMember, onSubmitDemotionRequest, onAddEventRecord, onDeleteEventRecord, onLogout, busy }: { data: ChapterDashboardData; onReport: (event: FormEvent<HTMLFormElement>) => void; onToggleTask: (task: Task) => void; onAddVolunteer: (event: FormEvent<HTMLFormElement>) => void; onUpdateVolunteer: (volunteer: Volunteer) => void; onDeleteVolunteer: (volunteer: Volunteer) => void; onAddExecutiveMember: (event: FormEvent<HTMLFormElement>) => void; onSubmitDemotionRequest: (event: FormEvent<HTMLFormElement>) => void; onAddEventRecord: (event: FormEvent<HTMLFormElement>) => void; onDeleteEventRecord: (record: ChapterEventRecord) => void; onLogout: () => void; busy: boolean }) {
@@ -1145,7 +1032,7 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
         </div></details>
       </>}
 
-      {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Open applications stay visible. Approved and declined records are hidden by default.</p></div>{closedApplications.length > 0 && <button className="visibility-toggle" onClick={() => setShowClosedApplications((value) => !value)}>{showClosedApplications ? "Hide closed" : `Show ${closedApplications.length} closed`}</button>}</div><div className="application-list">{visibleApplications.length ? visibleApplications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>{application.chapter_scope === "school" ? "North Carolina school chapter" : "Regional city chapter"}</span><span>Primary lead: {application.contact_name}</span>{application.grade_level && <span>Grade: {application.grade_level}</span>}<a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.additional_contacts?.length ? <div className="applicant-team"><span className="section-kicker">Additional team members</span>{application.additional_contacts.map((contact, index) => <div key={`${contact.email}-${index}`}><strong>{contact.full_name}</strong><span>{contact.role || "Volunteer"}</span>{contact.email && <a href={`mailto:${contact.email}`}>{contact.email}</a>}{contact.phone && <span>{contact.phone}</span>}</div>)}</div> : null}{application.why && <p>{application.why}</p>}<ApplicationPhotoPanel application={application} onAction={onAction} busy={busy} /><div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & prepare email</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}{application.status === "declined" && <Button kind="danger" disabled={busy} onClick={() => window.confirm(`Permanently delete the declined application from ${application.organization_name}?`) && onAction("admin-delete-application", { application_id: application.id })}>Delete</Button>}</div></article>) : <Empty text={closedApplications.length ? "No applications need a decision. Use Show closed to view older records." : "No applications yet."} />}</div></section>}
+      {tab === "applications" && <section className="admin-section"><div className="section-title"><div><h2>Chapter applications</h2><p>Open applications stay visible. Approved and declined records are hidden by default.</p></div>{closedApplications.length > 0 && <button className="visibility-toggle" onClick={() => setShowClosedApplications((value) => !value)}>{showClosedApplications ? "Hide closed" : `Show ${closedApplications.length} closed`}</button>}</div><div className="application-list">{visibleApplications.length ? visibleApplications.map((application) => <article className="application-card" key={application.id}><div className="application-top"><div><strong>{application.organization_name}</strong><span>{application.location}</span></div><Status value={application.status} /></div><div className="application-meta"><span>{application.chapter_scope === "school" ? "North Carolina school chapter" : "Regional city chapter"}</span><span>Primary lead: {application.contact_name}</span>{application.grade_level && <span>Grade: {application.grade_level}</span>}<a href={`mailto:${application.contact_email}`}>{application.contact_email}</a>{application.contact_phone && <a href={`tel:${application.contact_phone}`}>{application.contact_phone}</a>}<span>{new Date(application.created_at).toLocaleDateString()}</span></div>{application.additional_contacts?.length ? <div className="applicant-team"><span className="section-kicker">Additional team members</span>{application.additional_contacts.map((contact, index) => <div key={`${contact.email}-${index}`}><strong>{contact.full_name}</strong><span>{contact.role || "Volunteer"}</span>{contact.email && <a href={`mailto:${contact.email}`}>{contact.email}</a>}{contact.phone && <span>{contact.phone}</span>}</div>)}</div> : null}{application.why && <p>{application.why}</p>}<div className="row-actions">{application.status !== "approved" && <Button disabled={busy} onClick={() => onAction("admin-approve-application", { application_id: application.id }, application.organization_name)}>Approve & prepare email</Button>}{application.status !== "declined" && application.status !== "approved" && <Button kind="danger" disabled={busy} onClick={() => onAction("admin-update-application", { application_id: application.id, status: "declined" })}>Reject</Button>}{application.status === "declined" && <Button kind="danger" disabled={busy} onClick={() => window.confirm(`Permanently delete the declined application from ${application.organization_name}?`) && onAction("admin-delete-application", { application_id: application.id })}>Delete</Button>}</div></article>) : <Empty text={closedApplications.length ? "No applications need a decision. Use Show closed to view older records." : "No applications yet."} />}</div></section>}
 
       {tab === "reviews" && <>
         <div className="metric-strip admin-metrics">
@@ -1215,49 +1102,6 @@ function AdminView({ data, ready, tab, setTab, onLogin, onAction, onLogout, issu
       </>}
     </div>
   </section>;
-}
-
-function ApplicationPhotoPanel({ application, onAction, busy }: { application: Application; onAction: (action: string, payload: Record<string, unknown>, codeName?: string) => Promise<void>; busy: boolean }) {
-  const [downloading, setDownloading] = useState(false);
-  const [downloaded, setDownloaded] = useState(false);
-  if (!application.instagram_photo_consent && !application.photo_path && !application.photo_deleted_at) return null;
-  if (!application.photo_path) {
-    return <div className="application-photo empty">
-      <div><span className="section-kicker">Instagram photo</span><strong>{application.photo_deleted_at ? "Downloaded and deleted from storage" : "No photo on file"}</strong><small>{application.photo_deleted_at ? `Removed ${new Date(application.photo_deleted_at).toLocaleDateString()} · permission was granted` : "This application was submitted before photos were collected."}</small></div>
-    </div>;
-  }
-  const fileName = `tmm-${application.organization_name}-${application.contact_name}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "tmm-applicant";
-  const download = async () => {
-    if (!application.photo_url) return;
-    setDownloading(true);
-    try {
-      const response = await fetch(application.photo_url);
-      if (!response.ok) throw new Error("download failed");
-      const blob = await response.blob();
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = `${fileName}.jpg`;
-      link.click();
-      URL.revokeObjectURL(link.href);
-      setDownloaded(true);
-    } catch {
-      window.open(application.photo_url, "_blank", "noreferrer");
-    } finally { setDownloading(false); }
-  };
-  return <div className="application-photo">
-    {application.photo_url ? <a className="application-photo-thumb" href={application.photo_url} target="_blank" rel="noreferrer"><img src={application.photo_url} alt={`${application.contact_name} headshot`} loading="lazy" /></a> : <div className="application-photo-thumb pending" />}
-    <div>
-      <span className="section-kicker">Instagram photo · permission granted</span>
-      <strong>{application.contact_name}</strong>
-      <small>{application.photo_uploaded_at ? `Uploaded ${new Date(application.photo_uploaded_at).toLocaleDateString()}` : "Uploaded with this application"} · stored privately until you delete it</small>
-      <div className="application-photo-actions">
-        <a className="button secondary" href={application.photo_url ?? "#"} target="_blank" rel="noreferrer">View full size</a>
-        <Button kind="primary" disabled={busy || downloading || !application.photo_url} onClick={download}>{downloading ? "Downloading…" : downloaded ? "Download again" : "Download photo"}</Button>
-        <Button kind="danger" disabled={busy} onClick={() => window.confirm(`Delete ${application.contact_name}’s photo from storage? Download it first — this cannot be undone and the application record will keep only a note that the photo was collected.`) && onAction("admin-delete-application-photo", { application_id: application.id })}>Delete photo</Button>
-      </div>
-      <small className="application-photo-note">Download first, then delete to free storage. The application itself stays in the list.</small>
-    </div>
-  </div>;
 }
 
 function DemotionAdminCard({ request, chapter, onAction, busy }: { request: DemotionRequest; chapter?: Chapter; onAction: (action: string, payload: Record<string, unknown>) => Promise<void>; busy: boolean }) {
