@@ -43,7 +43,7 @@ test("server-renders the terms and privacy policy", async () => {
 });
 
 test("keeps the finished site free of starter-only infrastructure", async () => {
-  const [page, legalPage, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, geographyMigration, executiveTeamMigration, chapterOperationsMigration, eventPhotosMigration, gradeLevelMigration, applicationPhotoMigration, nextConfig, worker, packageJson] = await Promise.all([
+  const [page, legalPage, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, geographyMigration, executiveTeamMigration, chapterOperationsMigration, eventPhotosMigration, gradeLevelMigration, applicationPhotoMigration, removeApplicationPhotoMigration, nextConfig, worker, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/legal/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -59,6 +59,7 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
     readFile(new URL("../supabase/migrations/20260721172048_chapter_event_photos.sql", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260725224735_add_application_grade_level.sql", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260805120000_application_photo_consent.sql", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20260807120000_remove_application_photo_upload.sql", import.meta.url), "utf8"),
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -113,11 +114,7 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /May we use a photo of you on Instagram\?/);
   assert.match(page, /name="instagram_photo_consent"/);
   assert.match(page, /You must answer/);
-  assert.match(page, /hips up to your head/);
-  assert.match(page, /nothing is cropped/);
-  assert.match(page, /chapter-application-photos/);
-  assert.match(page, /admin-delete-application-photo/);
-  assert.match(page, /Download photo/);
+  assert.doesNotMatch(page, /ApplicantPhotoUpload|chapter-application-photos|admin-delete-application-photo|Download photo|hips up to your head/);
   assert.match(page, /drive\.google\.com\/drive/);
   assert.match(page, /name="legal_consent"/);
   assert.match(page, /href="\/legal"/);
@@ -136,8 +133,7 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(edgeFunction, /createSignedUrls/);
   assert.match(edgeFunction, /photo_paths/);
   assert.match(edgeFunction, /admin-review-demotion-request/);
-  assert.match(edgeFunction, /admin-delete-application-photo/);
-  assert.match(edgeFunction, /attachApplicationPhotoUrls/);
+  assert.doesNotMatch(edgeFunction, /chapter-application-photos|admin-delete-application-photo|attachApplicationPhotoUrls/);
   assert.match(edgeFunction, /admin-delete-task/);
   assert.match(edgeFunction, /admin-delete-event/);
   assert.match(edgeFunction, /Only declined applications can be deleted/);
@@ -184,6 +180,10 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(applicationPhotoMigration, /instagram_photo_consent = true/);
   assert.match(applicationPhotoMigration, /photo_path is not null/);
   assert.match(applicationPhotoMigration, /chapter-application-photos/);
+  assert.match(removeApplicationPhotoMigration, /add column if not exists instagram_photo_consent boolean not null default false/);
+  assert.match(removeApplicationPhotoMigration, /instagram_photo_consent = true/);
+  assert.doesNotMatch(removeApplicationPhotoMigration, /photo_path is not null/);
+  assert.match(removeApplicationPhotoMigration, /grant insert \(instagram_photo_consent\)/);
   assert.match(edgeFunction, /chapterGeography/);
   assert.match(edgeFunction, /chapter-login/);
   assert.match(nationalImpactMigration, /drop column if exists mentors_present/);
