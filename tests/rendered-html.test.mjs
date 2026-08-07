@@ -181,7 +181,10 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(applicationPhotoMigration, /photo_path is not null/);
   assert.match(applicationPhotoMigration, /chapter-application-photos/);
   assert.match(removeApplicationPhotoMigration, /add column if not exists instagram_photo_consent boolean not null default false/);
+  assert.match(removeApplicationPhotoMigration, /add column if not exists grade_level text/);
   assert.match(removeApplicationPhotoMigration, /instagram_photo_consent = true/);
+  assert.match(removeApplicationPhotoMigration, /grant insert \(\n/);
+  assert.match(removeApplicationPhotoMigration, /grade_level/);
   assert.doesNotMatch(removeApplicationPhotoMigration, /photo_path is not null/);
   assert.match(removeApplicationPhotoMigration, /grant insert \(instagram_photo_consent\)/);
   assert.match(edgeFunction, /chapterGeography/);
