@@ -110,6 +110,8 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /What grade are you in\?/);
   assert.match(page, /name="grade_level"/);
   assert.match(page, /grade_level/);
+  assert.match(page, /Every chapter serves both elementary and middle school students/);
+  assert.doesNotMatch(page, /Students you plan to serve|name="student_reach"/);
   assert.match(page, /Regional city chapter/);
   assert.match(page, /May we use a photo of you on Instagram\?/);
   assert.match(page, /name="instagram_photo_consent"/);
