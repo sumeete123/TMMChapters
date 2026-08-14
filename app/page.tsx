@@ -477,6 +477,7 @@ export default function Page() {
       contact_name: String(form.get("contact_name") ?? "").trim().slice(0, 120),
       contact_email: String(form.get("contact_email") ?? "").trim().toLowerCase().slice(0, 254),
       contact_phone: String(form.get("contact_phone") ?? "").trim().slice(0, 40),
+      grade_level: String(form.get("grade_level") ?? "").trim(),
       organization_name: String(form.get("chapter_scope")) === "school"
         ? String(form.get("school_name") ?? "").trim().slice(0, 160)
         : `${String(form.get("city") ?? "").trim().slice(0, 120)} Chapter`,
@@ -485,7 +486,6 @@ export default function Page() {
       city: String(form.get("city") ?? "").trim().slice(0, 120),
       region: String(form.get("region") ?? "").trim().slice(0, 120),
       school_name: String(form.get("chapter_scope")) === "school" ? String(form.get("school_name") ?? "").trim().slice(0, 160) : null,
-      student_reach: "Elementary and middle school students",
       why: String(form.get("why") ?? "").trim().slice(0, 5000),
       additional_contacts: form.getAll("additional_name").map((name, index) => ({
         full_name: String(name).trim().slice(0, 120),
@@ -760,12 +760,12 @@ function ApplicationView({ onSubmit, busy, authState, authMessage, onCaptcha }: 
         <Field label="Primary lead name"><input name="contact_name" minLength={2} maxLength={120} required /></Field>
         <Field label="Primary lead email"><input name="contact_email" type="email" maxLength={254} required /></Field>
         <Field label="Primary lead phone"><input name="contact_phone" type="tel" maxLength={40} required /></Field>
+        <Field label="What grade are you in?"><select name="grade_level" required defaultValue=""><option value="" disabled>Select your grade</option><option value="9th grade">9th grade</option><option value="10th grade">10th grade</option><option value="11th grade">11th grade</option><option value="12th grade">12th grade</option></select></Field>
         <Field label="City"><input name="city" minLength={2} maxLength={120} placeholder={chapterScope === "school" ? "Raleigh" : "Carmel"} required /></Field>
         {chapterScope === "school"
           ? <><input type="hidden" name="region" value="North Carolina" /><Field label="School name" hint="The chapter will use this school’s name."><input name="school_name" minLength={2} maxLength={160} placeholder="School name" required /></Field></>
           : <Field label="State, province, or country" hint="Used to distinguish cities with the same name."><input name="region" minLength={2} maxLength={120} placeholder="Indiana" required /></Field>}
       </div>
-      <p className="form-note">Every chapter serves both elementary and middle school students.</p>
       <section className="people-builder"><div className="people-builder-heading"><div><h2>Additional team members</h2><p>Add co-leads, officers, or volunteers who are joining with the primary lead.</p></div><Button type="button" kind="secondary" onClick={() => setAdditionalPeople((people) => [...people, crypto.randomUUID()])}>Add another person</Button></div>{additionalPeople.length ? <div className="people-stack">{additionalPeople.map((person, index) => <div className="person-row" key={person}><div className="person-row-heading"><strong>Person {index + 2}</strong><button type="button" onClick={() => setAdditionalPeople((people) => people.filter((id) => id !== person))}>Remove</button></div><div className="form-grid four"><Field label="Full name"><input name="additional_name" minLength={2} maxLength={120} required /></Field><Field label="Email"><input name="additional_email" type="email" maxLength={254} /></Field><Field label="Phone"><input name="additional_phone" type="tel" maxLength={40} /></Field><Field label="Role"><input name="additional_role" maxLength={80} placeholder="Co-lead, volunteer…" defaultValue="Volunteer" /></Field></div></div>)}</div> : <p className="people-empty">Only one person? You can continue without adding anyone else.</p>}</section>
       <Field label="Why do you want to start this chapter?"><textarea name="why" rows={5} maxLength={5000} required /></Field>
 

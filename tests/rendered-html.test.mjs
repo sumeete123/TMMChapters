@@ -107,9 +107,12 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /Preparing secure form/);
   assert.match(page, /One chapter per school/);
   assert.match(page, /One chapter per city/);
-  assert.doesNotMatch(page, /What grade are you in\?|name="grade_level"|6th grade|12th grade|College or university/);
-  assert.match(page, /Every chapter serves both elementary and middle school students/);
-  assert.doesNotMatch(page, /Students you plan to serve|name="student_reach"/);
+  assert.match(page, /What grade are you in\?/);
+  assert.match(page, /name="grade_level"/);
+  assert.match(page, /9th grade/);
+  assert.match(page, /12th grade/);
+  assert.doesNotMatch(page, /6th grade|7th grade|8th grade|College or university/);
+  assert.doesNotMatch(page, /Students you plan to serve|name="student_reach"|Every chapter serves both elementary and middle school students/);
   assert.match(page, /Regional city chapter/);
   assert.match(page, /May we use a photo of you on Instagram\?/);
   assert.match(page, /name="instagram_photo_consent"/);
