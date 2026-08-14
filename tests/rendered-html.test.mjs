@@ -107,9 +107,7 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /Preparing secure form/);
   assert.match(page, /One chapter per school/);
   assert.match(page, /One chapter per city/);
-  assert.match(page, /What grade are you in\?/);
-  assert.match(page, /name="grade_level"/);
-  assert.match(page, /grade_level/);
+  assert.doesNotMatch(page, /What grade are you in\?|name="grade_level"|6th grade|12th grade|College or university/);
   assert.match(page, /Every chapter serves both elementary and middle school students/);
   assert.doesNotMatch(page, /Students you plan to serve|name="student_reach"/);
   assert.match(page, /Regional city chapter/);

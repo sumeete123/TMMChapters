@@ -477,7 +477,6 @@ export default function Page() {
       contact_name: String(form.get("contact_name") ?? "").trim().slice(0, 120),
       contact_email: String(form.get("contact_email") ?? "").trim().toLowerCase().slice(0, 254),
       contact_phone: String(form.get("contact_phone") ?? "").trim().slice(0, 40),
-      grade_level: String(form.get("grade_level") ?? "").trim(),
       organization_name: String(form.get("chapter_scope")) === "school"
         ? String(form.get("school_name") ?? "").trim().slice(0, 160)
         : `${String(form.get("city") ?? "").trim().slice(0, 120)} Chapter`,
@@ -761,7 +760,6 @@ function ApplicationView({ onSubmit, busy, authState, authMessage, onCaptcha }: 
         <Field label="Primary lead name"><input name="contact_name" minLength={2} maxLength={120} required /></Field>
         <Field label="Primary lead email"><input name="contact_email" type="email" maxLength={254} required /></Field>
         <Field label="Primary lead phone"><input name="contact_phone" type="tel" maxLength={40} required /></Field>
-        <Field label="What grade are you in?"><select name="grade_level" required defaultValue=""><option value="" disabled>Select your grade</option><option value="6th grade">6th grade</option><option value="7th grade">7th grade</option><option value="8th grade">8th grade</option><option value="9th grade">9th grade</option><option value="10th grade">10th grade</option><option value="11th grade">11th grade</option><option value="12th grade">12th grade</option><option value="College or university">College or university</option><option value="Other">Other</option></select></Field>
         <Field label="City"><input name="city" minLength={2} maxLength={120} placeholder={chapterScope === "school" ? "Raleigh" : "Carmel"} required /></Field>
         {chapterScope === "school"
           ? <><input type="hidden" name="region" value="North Carolina" /><Field label="School name" hint="The chapter will use this school’s name."><input name="school_name" minLength={2} maxLength={160} placeholder="School name" required /></Field></>
