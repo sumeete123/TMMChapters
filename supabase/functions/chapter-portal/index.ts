@@ -444,6 +444,24 @@ Deno.serve(async (req: Request) => {
 
     if (action === "admin-overview") return json(await adminOverview());
 
+    if (action === "admin-delete-chapter") {
+      const chapterId = String(body.chapter_id ?? "").trim();
+      if (!chapterId) return json({ error: "Choose a chapter to delete." }, 400);
+      const { data: chapter, error: lookupError } = await admin.from("chapters")
+        .select("id, name, is_official")
+        .eq("id", chapterId)
+        .maybeSingle();
+      if (lookupError) throw lookupError;
+      if (!chapter) return json({ error: "That chapter could not be found." }, 404);
+      if (chapter.is_official) return json({ error: "The official National Chapter cannot be deleted." }, 400);
+      const { error } = await admin.from("chapters")
+        .delete()
+        .eq("id", chapterId)
+        .eq("is_official", false);
+      if (error) throw error;
+      return json({ overview: await adminOverview() });
+    }
+
     if (action === "admin-review-demotion-request") {
       const requestId = String(body.request_id ?? "");
       const decision = String(body.decision ?? "");

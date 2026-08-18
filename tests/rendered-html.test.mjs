@@ -43,7 +43,7 @@ test("server-renders the terms and privacy policy", async () => {
 });
 
 test("keeps the finished site free of starter-only infrastructure", async () => {
-  const [page, legalPage, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, geographyMigration, executiveTeamMigration, chapterOperationsMigration, eventPhotosMigration, gradeLevelMigration, applicationPhotoMigration, removeApplicationPhotoMigration, nextConfig, worker, packageJson] = await Promise.all([
+  const [page, legalPage, layout, css, edgeFunction, volunteerMigration, securityMigration, contactPayloadMigration, nationalImpactMigration, geographyMigration, executiveTeamMigration, chapterOperationsMigration, eventPhotosMigration, gradeLevelMigration, applicationPhotoMigration, removeApplicationPhotoMigration, chapterDeleteMigration, deleteHickoryRidgeMigration, nextConfig, worker, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/legal/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -60,6 +60,8 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
     readFile(new URL("../supabase/migrations/20260725224735_add_application_grade_level.sql", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260805120000_application_photo_consent.sql", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20260807120000_remove_application_photo_upload.sql", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20260818000000_admin_delete_chapters.sql", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20260818010000_delete_hickory_ridge_chapter.sql", import.meta.url), "utf8"),
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -75,6 +77,7 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(page, /Chapter command center/);
   assert.match(page, /Everything you need to launch your chapter/);
   assert.match(page, /Send approval email/);
+  assert.match(page, /Delete chapter/);
   assert.match(page, /1YVnkXYF1WHyXeoD81Hq9jF_dJJyaxJ3jfl2bzHgaVFs/);
   assert.match(page, /1hgxSoDHWPXDa6twMTREy772fba_G6dborm01ajz_O5g/);
   assert.match(page, /Chapter volunteers/);
@@ -136,10 +139,15 @@ test("keeps the finished site free of starter-only infrastructure", async () => 
   assert.match(edgeFunction, /createSignedUrls/);
   assert.match(edgeFunction, /photo_paths/);
   assert.match(edgeFunction, /admin-review-demotion-request/);
+  assert.match(edgeFunction, /admin-delete-chapter/);
   assert.doesNotMatch(edgeFunction, /chapter-application-photos|admin-delete-application-photo|attachApplicationPhotoUrls/);
   assert.match(edgeFunction, /admin-delete-task/);
   assert.match(edgeFunction, /admin-delete-event/);
   assert.match(edgeFunction, /Only declined applications can be deleted/);
+  assert.match(chapterDeleteMigration, /grant delete on public\.chapters to authenticated/);
+  assert.match(chapterDeleteMigration, /not is_official/);
+  assert.match(deleteHickoryRidgeMigration, /hickory ridge%/i);
+  assert.match(deleteHickoryRidgeMigration, /matching_chapters > 1/);
   assert.match(edgeFunction, /The request is too large/);
   assert.match(edgeFunction, /boundedWholeNumber/);
   assert.match(edgeFunction, /boundedDecimal/);
