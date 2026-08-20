@@ -53,6 +53,16 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+function databaseErrorMessage(error: unknown) {
+  const record = asRecord(error);
+  return String(record.message ?? record.details ?? record.hint ?? error ?? "");
+}
+
+function databaseErrorCode(error: unknown) {
+  const code = asRecord(error).code;
+  return typeof code === "string" ? code : "";
+}
+
 function chapterGeography(value: Record<string, unknown>) {
   const chapterScope = String(value.chapter_scope ?? "").trim();
   const city = String(value.city ?? "").trim().slice(0, 120);
@@ -221,9 +231,55 @@ async function provisionUniqueChapterCode(chapterId: string, requestedCode?: unk
     const code = randomSixDigitCode();
     const { error } = await admin.rpc("provision_chapter_code", { target_chapter_id: chapterId, input_code: code });
     if (!error) return code;
-    if (!error.message.includes("CHAPTER_CODE_COLLISION")) throw error;
+    if (!databaseErrorMessage(error).includes("CHAPTER_CODE_COLLISION")) throw error;
   }
   throw new Error("A unique chapter code could not be generated. Try again.");
+}
+
+async function findChapterForApplication(application: Record<string, unknown>, geography: ReturnType<typeof chapterGeography>) {
+  let query = admin.from("chapters")
+    .select("id, name, contact_name, contact_email, chapter_scope, city, region, school_name, status")
+    .eq("chapter_scope", geography.chapter_scope)
+    .eq("city", geography.city)
+    .eq("region", geography.region)
+    .eq("contact_email", String(application.contact_email ?? "").trim().toLowerCase())
+    .neq("status", "archived")
+    .limit(1);
+  query = geography.chapter_scope === "school" ? query.eq("school_name", geography.school_name) : query.is("school_name", null);
+  const { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function addApplicationVolunteers(chapterId: string, application: Record<string, unknown>) {
+  const additionalContacts = Array.isArray(application.additional_contacts) ? application.additional_contacts : [];
+  if (!additionalContacts.length) return;
+
+  const { data: existing, error: existingError } = await admin.from("chapter_volunteers")
+    .select("full_name, email")
+    .eq("chapter_id", chapterId);
+  if (existingError) throw existingError;
+  const existingContacts = new Set((existing ?? []).flatMap((contact) => [
+    `${String(contact.full_name ?? "").trim().toLowerCase()}|${String(contact.email ?? "").trim().toLowerCase()}`,
+  ]));
+
+  const volunteerRows = additionalContacts
+    .slice(0, 12)
+    .map((contact: Record<string, unknown>) => ({
+      chapter_id: chapterId,
+      full_name: String(contact.full_name ?? contact.name ?? "").trim().slice(0, 120),
+      email: String(contact.email ?? "").trim().toLowerCase().slice(0, 254) || null,
+      phone: String(contact.phone ?? "").trim().slice(0, 40) || null,
+      role: String(contact.role ?? "Volunteer").trim().slice(0, 80) || "Volunteer",
+      status: "active",
+    }))
+    .filter((contact: { full_name: string; email: string | null }) => contact.full_name.length >= 2)
+    .filter((contact: { full_name: string; email: string | null }) => !existingContacts.has(`${contact.full_name.toLowerCase()}|${String(contact.email ?? "").toLowerCase()}`));
+
+  if (volunteerRows.length) {
+    const { error } = await admin.from("chapter_volunteers").insert(volunteerRows);
+    if (error) throw error;
+  }
 }
 
 Deno.serve(async (req: Request) => {
@@ -579,50 +635,43 @@ Deno.serve(async (req: Request) => {
       const applicationId = String(body.application_id ?? "");
       const { data: application, error: applicationError } = await admin.from("chapter_applications").select("*").eq("id", applicationId).single();
       if (applicationError) throw applicationError;
-      if (application.status === "approved") return json({ error: "This application is already approved." }, 409);
       const geography = chapterGeography(application);
-      const { data: chapter, error: chapterError } = await admin.from("chapters").insert({
-        name: geography.name,
-        slug: slugify(geography.name),
-        location: geography.location,
-        chapter_scope: geography.chapter_scope,
-        city: geography.city,
-        region: geography.region,
-        school_name: geography.school_name,
-        contact_name: application.contact_name,
-        contact_email: String(application.contact_email).toLowerCase(),
-        contact_phone: application.contact_phone || null,
-        status: "active",
-      }).select("id, name, contact_name, contact_email").single();
-      if (chapterError) throw chapterError;
+      // If a previous request got as far as creating the chapter but failed
+      // before returning, reuse it instead of creating a duplicate or telling
+      // the admin that the action failed forever.
+      let chapter = await findChapterForApplication(application, geography);
+      let chapterWasCreated = false;
+      if (!chapter) {
+        const { data: createdChapter, error: chapterError } = await admin.from("chapters").insert({
+          name: geography.name,
+          slug: slugify(geography.name),
+          location: geography.location,
+          chapter_scope: geography.chapter_scope,
+          city: geography.city,
+          region: geography.region,
+          school_name: geography.school_name,
+          contact_name: application.contact_name,
+          contact_email: String(application.contact_email).toLowerCase(),
+          contact_phone: application.contact_phone || null,
+          status: "active",
+        }).select("id, name, contact_name, contact_email, chapter_scope, city, region, school_name, status").single();
+        if (chapterError) throw chapterError;
+        chapter = createdChapter;
+        chapterWasCreated = true;
+      }
       let code: string;
       try {
         code = await provisionUniqueChapterCode(chapter.id);
       } catch (provisionError) {
-        await admin.from("chapters").delete().eq("id", chapter.id);
+        if (chapterWasCreated) await admin.from("chapters").delete().eq("id", chapter.id);
         throw provisionError;
       }
       const { error: approvalError } = await admin.from("chapter_applications").update({ status: "approved", updated_at: new Date().toISOString() }).eq("id", applicationId);
       if (approvalError) {
-        await admin.from("chapters").delete().eq("id", chapter.id);
+        if (chapterWasCreated) await admin.from("chapters").delete().eq("id", chapter.id);
         throw approvalError;
       }
-      const additionalContacts = Array.isArray(application.additional_contacts) ? application.additional_contacts : [];
-      const volunteerRows = additionalContacts
-        .slice(0, 12)
-        .map((contact: Record<string, unknown>) => ({
-          chapter_id: chapter.id,
-          full_name: String(contact.full_name ?? contact.name ?? "").trim().slice(0, 120),
-          email: String(contact.email ?? "").trim().toLowerCase().slice(0, 254) || null,
-          phone: String(contact.phone ?? "").trim().slice(0, 40) || null,
-          role: String(contact.role ?? "Volunteer").trim().slice(0, 80) || "Volunteer",
-          status: "active",
-        }))
-        .filter((contact: { full_name: string }) => contact.full_name.length >= 2);
-      if (volunteerRows.length) {
-        const { error: volunteerError } = await admin.from("chapter_volunteers").insert(volunteerRows);
-        if (volunteerError) throw volunteerError;
-      }
+      await addApplicationVolunteers(chapter.id, application);
       return json({ chapter, code, overview: await adminOverview() });
     }
 
@@ -713,14 +762,18 @@ Deno.serve(async (req: Request) => {
 
     return json({ error: "Unknown action." }, 400);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Something went wrong.";
+    const message = databaseErrorMessage(error);
+    const code = databaseErrorCode(error);
+    console.error("chapter-portal request failed", { action: typeof action === "string" ? action : "unknown", code, message });
     if (message.includes("RATE_LIMITED")) return json({ error: "Too many attempts. Please wait 15 minutes and try again." }, 429);
     if (message.includes("INVALID_CODE_FORMAT")) return json({ error: "Enter a 6-digit access code." }, 400);
+    if (message.includes("ACCESS_DENIED") || code === "42501") return json({ error: "Approval is not configured correctly on the server. Apply the latest database migration, then redeploy the chapter portal function." }, 500);
+    if (message.includes("CHAPTER_CODE_COLLISION")) return json({ error: "A unique chapter access code could not be generated. Please try approving it again." }, 409);
     if (message.includes("chapters_one_open_school_idx")) return json({ error: "That school already has an active chapter." }, 409);
     if (message.includes("chapters_one_open_regional_city_idx")) return json({ error: "That city already has an active regional chapter." }, 409);
     if (message.includes("INVALID_NC_CHAPTER_REGION") || message.includes("INVALID_REGIONAL_CHAPTER_REGION")) return json({ error: "North Carolina uses school chapters. Locations outside North Carolina use regional city chapters." }, 400);
     if (message.includes("INVALID_CHAPTER_SCHOOL")) return json({ error: "Enter the North Carolina school name." }, 400);
     if (message.includes("INVALID_CHAPTER_CITY") || message.includes("INVALID_CHAPTER_REGION") || message.includes("INVALID_CHAPTER_SCOPE")) return json({ error: "Choose the chapter type and enter a valid city and region." }, 400);
-    return json({ error: "The request could not be completed." }, 400);
+    return json({ error: "The request could not be completed." }, 500);
   }
 });
